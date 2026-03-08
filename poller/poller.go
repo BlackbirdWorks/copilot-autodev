@@ -40,7 +40,7 @@ type Poller struct {
 	Events chan Event
 
 	mu          sync.Mutex
-	fixAttempts map[int]int // issueNum -> number of fix prompts posted so far
+	refinements map[int]int // issueNum -> number of green-CI refinement prompts sent
 }
 
 // New creates a Poller ready to Start.
@@ -49,7 +49,7 @@ func New(cfg *config.Config, gh *ghclient.Client) *Poller {
 		cfg:         cfg,
 		gh:          gh,
 		Events:      make(chan Event, 1),
-		fixAttempts: make(map[int]int),
+		refinements: make(map[int]int),
 	}
 }
 
@@ -212,8 +212,8 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		if err := p.gh.PostComment(ctx, pr.GetNumber(), comment); err != nil {
 			return err
 		}
-		// Reset fix-attempt counter: a new agent run is starting fresh.
-		p.setFixAttempts(num, 0)
+		// Reset refinement counter: the agent is starting a fresh run.
+		p.setRefinements(num, 0)
 		return nil
 	}
 
@@ -233,12 +233,7 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 	}
 
 	if anyFail {
-		attempts := p.incFixAttempts(num)
-		if attempts > ghclient.MaxFixAttempts {
-			// All attempts exhausted; leave the PR for human review.
-			return nil
-		}
-		// Post the fix + full-completion confirmation request immediately.
+		// Post a fix request every time CI fails – no cap, keep retrying.
 		runID, err := p.gh.FindFailedRunID(ctx, pr.GetHead().GetSHA())
 		if err != nil {
 			return err
@@ -248,10 +243,8 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 			logs, _ = p.gh.FailedRunLogs(ctx, runID)
 		}
 		body := fmt.Sprintf(
-			"@copilot CI checks are failing (attempt %d of %d). "+
-				"Please fix the failing tests and confirm you have fully completed "+
-				"all requirements from the original issue.\n\n%s",
-			attempts, ghclient.MaxFixAttempts, logs,
+			"@copilot CI checks are failing. Please fix the failing tests.\n\n%s",
+			logs,
 		)
 		if err := p.gh.PostReviewComment(ctx, pr.GetNumber(), body); err != nil {
 			return err
@@ -264,8 +257,24 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		return nil
 	}
 
-	// Step 5: All CI green – approve and merge.
-	p.setFixAttempts(num, 0)
+	// CI is green.  Send up to MaxRefinementPrompts "review against the original
+	// issue" prompts before approving and merging.
+	sent := p.getRefinements(num)
+	if sent < ghclient.MaxRefinementPrompts {
+		p.incRefinements(num)
+		body := fmt.Sprintf(
+			"@copilot CI is passing (refinement check %d of %d). "+
+				"Please review your implementation against all requirements in the "+
+				"original issue and refine anything that is missing or incomplete.",
+			sent+1, ghclient.MaxRefinementPrompts,
+		)
+		if err := p.gh.PostReviewComment(ctx, pr.GetNumber(), body); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Step 5: All CI green and all refinement prompts sent – approve and merge.
 	if err := p.gh.ApprovePR(ctx, pr.GetNumber()); err != nil {
 		// Non-fatal if we already approved.
 		if !strings.Contains(err.Error(), "already approved") &&
@@ -315,22 +324,27 @@ func (p *Poller) snapshot(ctx context.Context) ([]*State, []*State, []*State) {
 		reviewStates
 }
 
-// -- fix-attempt counter helpers ---------------------------------------------
+// -- refinement counter helpers ----------------------------------------------
 
-func (p *Poller) incFixAttempts(issueNum int) int {
+func (p *Poller) getRefinements(issueNum int) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.fixAttempts[issueNum]++
-	return p.fixAttempts[issueNum]
+	return p.refinements[issueNum]
 }
 
-func (p *Poller) setFixAttempts(issueNum, n int) {
+func (p *Poller) incRefinements(issueNum int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refinements[issueNum]++
+}
+
+func (p *Poller) setRefinements(issueNum, n int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if n == 0 {
-		delete(p.fixAttempts, issueNum)
+		delete(p.refinements, issueNum)
 	} else {
-		p.fixAttempts[issueNum] = n
+		p.refinements[issueNum] = n
 	}
 }
 

@@ -18,11 +18,11 @@ const (
 
 	CopilotUser = "copilot"
 
-	// MaxFixAttempts is the maximum number of times the orchestrator will post
-	// a "@copilot please fix + confirm full completion" prompt before giving up
-	// and leaving the PR for human review.  On the very first CI failure the
-	// prompt is posted immediately; this counter simply caps the retry loop.
-	MaxFixAttempts = 3
+	// MaxRefinementPrompts is the number of times the orchestrator will ask
+	// @copilot to review its implementation against the full original issue
+	// requirements once CI is green.  Only after all prompts have been sent
+	// (and CI remains green) will the PR be approved and merged.
+	MaxRefinementPrompts = 3
 )
 
 // Client wraps the GitHub SDK client.
