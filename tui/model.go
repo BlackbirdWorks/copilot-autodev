@@ -130,7 +130,7 @@ func (m Model) renderColumn(
 
 	linesUsed := 2
 	for _, s := range states {
-		line := m.renderItem(s)
+		line := m.renderItem(s, width)
 		sb.WriteString(line)
 		sb.WriteString("\n")
 		linesUsed++
@@ -153,22 +153,49 @@ func (m Model) renderColumn(
 	return columnStyle.Width(width).Height(height).Render(sb.String())
 }
 
-func (m Model) renderItem(s *poller.State) string {
+func (m Model) renderItem(s *poller.State, colWidth int) string {
 	issue := s.Issue
-	num := issueNumStyle.Render(fmt.Sprintf("#%d", issue.GetNumber()))
+	numStr := fmt.Sprintf("#%d", issue.GetNumber())
 	title := issue.GetTitle()
-	if len(title) > 42 {
-		title = title[:39] + "…"
-	}
 
 	age := ghclient.TimeAgo(issue.GetCreatedAt().Time)
-	line := fmt.Sprintf("  %s %s", num, itemStyle.Render(title))
+	agePart := fmt.Sprintf("  [%s]", age)
 
+	prStr := ""
 	if s.PR != nil {
-		prPart := prNumStyle.Render(fmt.Sprintf(" → PR#%d", s.PR.GetNumber()))
-		line += prPart
+		prStr = fmt.Sprintf(" → PR#%d", s.PR.GetNumber())
 	}
-	line += dimItemStyle.Render(fmt.Sprintf("  [%s]", age))
+
+	// Effective wrap width inside the column: Width(colWidth) with Padding(0,1)
+	// causes lipgloss to wrap at colWidth-2 (subtracts left and right padding).
+	// Line format: "  <numStr> <title><prStr><agePart>"
+	// Fixed overhead: 2 (indent) + visual width of numStr + 1 (space) + visual widths of prStr and agePart.
+	// Use lipgloss.Width for visual-width measurement so that multi-byte characters
+	// (e.g. the → arrow in prStr) are counted as display columns, not bytes.
+	effectiveWidth := colWidth - 2
+	fixed := 2 + lipgloss.Width(numStr) + 1 + lipgloss.Width(prStr) + lipgloss.Width(agePart)
+	available := effectiveWidth - fixed
+	if available < 1 {
+		available = 1
+	}
+
+	// Truncate using rune iteration for multi-byte character safety.
+	// The ellipsis "…" is a single display column (despite being 3 UTF-8 bytes).
+	runes := []rune(title)
+	if len(runes) > available {
+		if available > 1 {
+			title = string(runes[:available-1]) + "…"
+		} else {
+			title = "…"
+		}
+	}
+
+	num := issueNumStyle.Render(numStr)
+	line := fmt.Sprintf("  %s %s", num, itemStyle.Render(title))
+	if s.PR != nil {
+		line += prNumStyle.Render(prStr)
+	}
+	line += dimItemStyle.Render(agePart)
 	return line
 }
 
