@@ -49,7 +49,7 @@ func main() {
 	}
 
 	// Create and start the background poller.
-	p := poller.New(cfg, gh)
+	p := poller.New(cfg, gh, token)
 	p.Start(setupCtx)
 
 	// Create the Bubble Tea model.

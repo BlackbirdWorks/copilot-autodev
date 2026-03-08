@@ -62,6 +62,19 @@ type Config struct {
 	// The orchestrator always appends the failing workflow name, job names,
 	// and per-job log URLs after this text.
 	CIFixPrompt string `yaml:"ci_fix_prompt"`
+
+	// MaxMergeConflictRetries is the number of times the orchestrator asks
+	// @copilot to fix merge conflicts before falling back to local AI-powered
+	// resolution.  Default: 3.
+	MaxMergeConflictRetries int `yaml:"max_merge_conflict_retries"`
+
+	// AIMergeResolverCmd is the executable invoked for local merge-conflict
+	// resolution after @copilot retries are exhausted.  The prompt is passed
+	// as a single argument.  Default: "gemini".
+	AIMergeResolverCmd string `yaml:"ai_merge_resolver_cmd"`
+
+	// AIMergeResolverPrompt is the text passed to AIMergeResolverCmd.
+	AIMergeResolverPrompt string `yaml:"ai_merge_resolver_prompt"`
 }
 
 // Load reads a YAML config file from path and returns a populated Config with
@@ -85,6 +98,9 @@ func Load(path string) (*Config, error) {
 		MergeCommitMessage:  "Auto-merged by copilot-autocode",
 		MergeConflictPrompt: "@copilot Please merge from main and address any merge conflicts.",
 		CIFixPrompt:         "@copilot Please fix the failing CI checks.",
+		MaxMergeConflictRetries: 3,
+		AIMergeResolverCmd:      "gemini",
+		AIMergeResolverPrompt:   "Please resolve all git merge conflicts in this repository. Make minimal changes to resolve the conflicts while preserving the intent of both sides.",
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config file %q: %w", path, err)
@@ -110,6 +126,10 @@ func Load(path string) (*Config, error) {
 		// valid
 	default:
 		return nil, fmt.Errorf("config: merge_method must be squash, merge, or rebase (got %q)", cfg.MergeMethod)
+	}
+
+	if cfg.MaxMergeConflictRetries < 1 {
+		cfg.MaxMergeConflictRetries = 1
 	}
 
 	return cfg, nil

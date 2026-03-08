@@ -12,6 +12,7 @@ import (
 
 	"github.com/BlackbirdWorks/copilot-autocode/config"
 	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
+	"github.com/BlackbirdWorks/copilot-autocode/resolver"
 	"github.com/google/go-github/v68/github"
 )
 
@@ -36,14 +37,16 @@ type Event struct {
 type Poller struct {
 	cfg    *config.Config
 	gh     *ghclient.Client
+	token  string // GitHub PAT — used only for local git operations
 	Events chan Event
 }
 
 // New creates a Poller ready to Start.
-func New(cfg *config.Config, gh *ghclient.Client) *Poller {
+func New(cfg *config.Config, gh *ghclient.Client, token string) *Poller {
 	return &Poller{
 		cfg:    cfg,
 		gh:     gh,
+		token:  token,
 		Events: make(chan Event, 1),
 	}
 }
@@ -198,12 +201,50 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		return err
 	}
 	if !upToDate {
-		// Wait if an agent is already fixing this.
+		// Wait if an agent is already working on this.
 		running, _ := p.gh.ActiveCopilotAgentRunning(ctx, pr.GetHead().GetSHA())
 		if running {
 			return nil
 		}
-		if err := p.gh.PostComment(ctx, pr.GetNumber(), p.cfg.MergeConflictPrompt); err != nil {
+
+		// Count how many @copilot merge-conflict prompts have been sent so far
+		// (marker embedded in each comment survives process restarts).
+		attempts, err := p.gh.CountMergeConflictAttempts(ctx, pr.GetNumber())
+		if err != nil {
+			return err
+		}
+
+		if attempts >= p.cfg.MaxMergeConflictRetries {
+			// @copilot has failed too many times — resolve locally with the AI CLI.
+			log.Printf("PR#%d: %d merge-conflict @copilot attempt(s) exhausted; "+
+				"running local AI resolution via %q",
+				pr.GetNumber(), attempts, p.cfg.AIMergeResolverCmd)
+
+			prd := resolver.PRDetails{
+				Owner:      p.cfg.GitHubOwner,
+				Repo:       p.cfg.GitHubRepo,
+				HeadBranch: pr.GetHead().GetRef(),
+				BaseBranch: pr.GetBase().GetRef(),
+			}
+			if err := resolver.RunLocalResolution(ctx, p.token, prd, p.cfg); err != nil {
+				log.Printf("warning: local AI merge resolution failed for PR#%d: %v",
+					pr.GetNumber(), err)
+				return nil
+			}
+			notice := fmt.Sprintf(
+				"ℹ️ Merge conflicts were resolved locally by copilot-autocode using `%s`.",
+				p.cfg.AIMergeResolverCmd)
+			if err := p.gh.PostComment(ctx, pr.GetNumber(), notice); err != nil {
+				log.Printf("warning: failed to post local-resolution notice on PR#%d: %v",
+					pr.GetNumber(), err)
+			}
+			return nil
+		}
+
+		// Still within the @copilot retry budget — ask it to fix conflicts.
+		// Embed the marker so future ticks can count this attempt.
+		comment := p.cfg.MergeConflictPrompt + "\n" + ghclient.MergeConflictCommentMarker
+		if err := p.gh.PostComment(ctx, pr.GetNumber(), comment); err != nil {
 			return err
 		}
 		return nil

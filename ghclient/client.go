@@ -18,6 +18,12 @@ const (
 	// marker to determine how many refinement rounds have already been sent,
 	// which means the count survives process restarts.
 	RefinementCommentMarker = "<!-- copilot-autocode:refinement -->"
+
+	// MergeConflictCommentMarker is an invisible HTML comment embedded in
+	// every merge-conflict @copilot prompt.  Counting these comments on a PR
+	// tells the orchestrator how many @copilot attempts have been made so far,
+	// which means the count survives process restarts.
+	MergeConflictCommentMarker = "<!-- copilot-autocode:merge-conflict -->"
 )
 
 // FailedJobInfo describes a single failed CI job.
@@ -198,6 +204,31 @@ func (c *Client) CountRefinementPromptsSent(ctx context.Context, prNum int) (int
 		}
 		for _, r := range reviews {
 			if strings.Contains(r.GetBody(), RefinementCommentMarker) {
+				count++
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return count, nil
+}
+
+// CountMergeConflictAttempts returns the number of merge-conflict @copilot
+// prompts the orchestrator has already posted on the given PR by counting
+// issue comments whose body contains MergeConflictCommentMarker.  Reading
+// the count from GitHub means it survives process restarts.
+func (c *Client) CountMergeConflictAttempts(ctx context.Context, prNum int) (int, error) {
+	count := 0
+	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		comments, resp, err := c.gh.Issues.ListComments(ctx, c.owner, c.repo, prNum, opts)
+		if err != nil {
+			return 0, err
+		}
+		for _, cm := range comments {
+			if strings.Contains(cm.GetBody(), MergeConflictCommentMarker) {
 				count++
 			}
 		}

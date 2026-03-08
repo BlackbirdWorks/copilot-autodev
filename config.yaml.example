@@ -58,3 +58,17 @@ merge_conflict_prompt: "@copilot Please merge from main and address any merge co
 # The orchestrator always appends the failing workflow name, job names,
 # and per-job log URLs after this text automatically.
 ci_fix_prompt: "@copilot Please fix the failing CI checks."
+
+# ── Local AI merge-conflict fallback ──────────────────────────────────────────
+
+# Number of times @copilot is asked to fix merge conflicts before the
+# orchestrator falls back to running a local AI CLI to resolve them.
+max_merge_conflict_retries: 3
+
+# The AI CLI executable used for local merge-conflict resolution.
+# It is called as: <cmd> "<prompt>" from the root of a fresh clone of the
+# PR branch.  Default: "gemini" (Google Gemini CLI).
+ai_merge_resolver_cmd: "gemini"
+
+# The prompt passed to ai_merge_resolver_cmd.
+ai_merge_resolver_prompt: "Please resolve all git merge conflicts in this repository. Make minimal changes to resolve the conflicts while preserving the intent of both sides."
