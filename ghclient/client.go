@@ -7,23 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BlackbirdWorks/copilot-autocode/config"
 	"github.com/google/go-github/v68/github"
 	"golang.org/x/oauth2"
 )
 
 const (
-	LabelQueue  = "ai-queue"
-	LabelCoding = "ai-coding"
-	LabelReview = "ai-review"
-
-	CopilotUser = "copilot"
-
-	// MaxRefinementPrompts is the number of times the orchestrator will ask
-	// @copilot to review its implementation against the full original issue
-	// requirements once CI is green.  Only after all prompts have been sent
-	// (and CI remains green) will the PR be approved and merged.
-	MaxRefinementPrompts = 3
-
 	// RefinementCommentMarker is an invisible HTML comment embedded in every
 	// refinement prompt.  The orchestrator counts PR reviews containing this
 	// marker to determine how many refinement rounds have already been sent,
@@ -31,21 +20,39 @@ const (
 	RefinementCommentMarker = "<!-- copilot-autocode:refinement -->"
 )
 
-// Client wraps the GitHub SDK client.
+// FailedJobInfo describes a single failed CI job.
+type FailedJobInfo struct {
+	Name   string // display name of the job
+	LogURL string // URL to the raw logs (may be empty if unavailable)
+}
+
+// Client wraps the GitHub SDK client with the settings from Config.
 type Client struct {
-	gh    *github.Client
-	owner string
-	repo  string
+	gh          *github.Client
+	owner       string
+	repo        string
+	labelQueue  string
+	labelCoding string
+	labelReview string
+	copilotUser string
+	mergeMethod string
+	mergeMsg    string
 }
 
 // New creates a new Client authenticated with the provided PAT token.
-func New(token, owner, repo string) *Client {
+func New(token string, cfg *config.Config) *Client {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	tc := oauth2.NewClient(context.Background(), ts)
 	return &Client{
-		gh:    github.NewClient(tc),
-		owner: owner,
-		repo:  repo,
+		gh:          github.NewClient(tc),
+		owner:       cfg.GitHubOwner,
+		repo:        cfg.GitHubRepo,
+		labelQueue:  cfg.LabelQueue,
+		labelCoding: cfg.LabelCoding,
+		labelReview: cfg.LabelReview,
+		copilotUser: cfg.CopilotUser,
+		mergeMethod: cfg.MergeMethod,
+		mergeMsg:    cfg.MergeCommitMessage,
 	}
 }
 
@@ -53,8 +60,8 @@ func New(token, owner, repo string) *Client {
 func (c *Client) IssuesByLabel(ctx context.Context, label string) ([]*github.Issue, error) {
 	var all []*github.Issue
 	opts := &github.IssueListByRepoOptions{
-		State:  "open",
-		Labels: []string{label},
+		State:       "open",
+		Labels:      []string{label},
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 	for {
@@ -86,7 +93,6 @@ func (c *Client) AddLabel(ctx context.Context, issueNum int, label string) error
 func (c *Client) RemoveLabel(ctx context.Context, issueNum int, label string) error {
 	_, err := c.gh.Issues.RemoveLabelForIssue(ctx, c.owner, c.repo, issueNum, label)
 	if err != nil {
-		// Ignore "label not found" errors.
 		if strings.Contains(err.Error(), "404") {
 			return nil
 		}
@@ -95,9 +101,9 @@ func (c *Client) RemoveLabel(ctx context.Context, issueNum int, label string) er
 	return nil
 }
 
-// AssignCopilot assigns the copilot user to the issue.
+// AssignCopilot assigns the configured copilot user to the issue.
 func (c *Client) AssignCopilot(ctx context.Context, issueNum int) error {
-	_, _, err := c.gh.Issues.AddAssignees(ctx, c.owner, c.repo, issueNum, []string{CopilotUser})
+	_, _, err := c.gh.Issues.AddAssignees(ctx, c.owner, c.repo, issueNum, []string{c.copilotUser})
 	return err
 }
 
@@ -110,7 +116,6 @@ func (c *Client) CloseIssue(ctx context.Context, issueNum int) error {
 
 // OpenPRForIssue finds the first open PR whose title or body references the issue.
 func (c *Client) OpenPRForIssue(ctx context.Context, issueNum int) (*github.PullRequest, error) {
-	// Search for PRs that reference this issue.
 	query := fmt.Sprintf("repo:%s/%s is:pr is:open #%d in:body", c.owner, c.repo, issueNum)
 	opts := &github.SearchOptions{
 		ListOptions: github.ListOptions{PerPage: 10},
@@ -131,9 +136,9 @@ func (c *Client) OpenPRForIssue(ctx context.Context, issueNum int) (*github.Pull
 		}
 	}
 
-	// Fallback: list recent PRs and look for branch / title match.
+	// Fallback: list recent PRs and look for issue number in body/title.
 	prs, _, err := c.gh.PullRequests.List(ctx, c.owner, c.repo, &github.PullRequestListOptions{
-		State: "open",
+		State:       "open",
 		ListOptions: github.ListOptions{PerPage: 50},
 	})
 	if err != nil {
@@ -153,26 +158,6 @@ func (c *Client) IsPRDraft(pr *github.PullRequest) bool {
 	return pr.GetDraft()
 }
 
-// MarkReadyForReview converts a draft PR to a ready-for-review PR via the REST API.
-func (c *Client) MarkReadyForReview(ctx context.Context, pr *github.PullRequest) error {
-	nodeID := pr.GetNodeID()
-	if nodeID == "" {
-		return nil
-	}
-	// Use the REST endpoint to mark as ready for review.
-	body := strings.NewReader(`{"draft":false}`)
-	req, err := c.gh.NewRequest("PATCH",
-		fmt.Sprintf("repos/%s/%s/pulls/%d", c.owner, c.repo, pr.GetNumber()),
-		body)
-	if err != nil {
-		return err
-	}
-	// Accept the preview header required for draft PRs.
-	req.Header.Set("Accept", "application/vnd.github.shadow-cat-preview+json")
-	_, err = c.gh.Do(ctx, req, nil)
-	return err
-}
-
 // IsBranchBehindBase returns true when the PR branch is behind the base branch.
 func (c *Client) IsBranchBehindBase(ctx context.Context, pr *github.PullRequest) (bool, error) {
 	comp, _, err := c.gh.Repositories.CompareCommits(ctx, c.owner, c.repo,
@@ -180,7 +165,6 @@ func (c *Client) IsBranchBehindBase(ctx context.Context, pr *github.PullRequest)
 	if err != nil {
 		return false, err
 	}
-	// "behind" means the head is missing commits from base.
 	status := comp.GetStatus()
 	return status == "behind" || status == "diverged", nil
 }
@@ -191,7 +175,7 @@ func (c *Client) PostComment(ctx context.Context, issueNum int, body string) err
 	return err
 }
 
-// PostReviewComment posts a review comment (requesting changes) on a PR.
+// PostReviewComment posts a review comment on a PR.
 func (c *Client) PostReviewComment(ctx context.Context, prNum int, body string) error {
 	event := "COMMENT"
 	_, _, err := c.gh.PullRequests.CreateReview(ctx, c.owner, c.repo, prNum, &github.PullRequestReviewRequest{
@@ -201,10 +185,9 @@ func (c *Client) PostReviewComment(ctx context.Context, prNum int, body string) 
 	return err
 }
 
-// CountRefinementPromptsSent returns the number of refinement prompts the
-// orchestrator has already posted on the given PR by counting PR reviews whose
-// body contains RefinementCommentMarker.  Reading this count from GitHub means
-// it survives process restarts.
+// CountRefinementPromptsSent returns the number of refinement prompts already
+// posted on the given PR by counting reviews containing RefinementCommentMarker.
+// Reading the count from GitHub means it survives process restarts.
 func (c *Client) CountRefinementPromptsSent(ctx context.Context, prNum int) (int, error) {
 	count := 0
 	opts := &github.ListOptions{PerPage: 100}
@@ -235,19 +218,18 @@ func (c *Client) ApprovePR(ctx context.Context, prNum int) error {
 	return err
 }
 
-// MergePR squash-merges the PR.
+// MergePR merges the PR using the method and commit message from Config.
 func (c *Client) MergePR(ctx context.Context, pr *github.PullRequest) error {
 	_, _, err := c.gh.PullRequests.Merge(ctx, c.owner, c.repo, pr.GetNumber(),
-		"Auto-merged by copilot-autocode",
-		&github.PullRequestOptions{MergeMethod: "squash"})
+		c.mergeMsg,
+		&github.PullRequestOptions{MergeMethod: c.mergeMethod})
 	return err
 }
 
-// LatestWorkflowRun returns the most recent workflow run for the given SHA.
-// Returns nil if no runs exist yet.
+// LatestWorkflowRun returns all recent workflow runs for the given commit SHA.
 func (c *Client) LatestWorkflowRun(ctx context.Context, sha string) ([]*github.WorkflowRun, error) {
 	runs, _, err := c.gh.Actions.ListRepositoryWorkflowRuns(ctx, c.owner, c.repo, &github.ListWorkflowRunsOptions{
-		HeadSHA: sha,
+		HeadSHA:     sha,
 		ListOptions: github.ListOptions{PerPage: 20},
 	})
 	if err != nil {
@@ -256,31 +238,55 @@ func (c *Client) LatestWorkflowRun(ctx context.Context, sha string) ([]*github.W
 	return runs.WorkflowRuns, nil
 }
 
-// FailedRunLogs returns combined log text for a failed workflow run.
-func (c *Client) FailedRunLogs(ctx context.Context, runID int64) (string, error) {
-	jobs, _, err := c.gh.Actions.ListWorkflowJobs(ctx, c.owner, c.repo, runID, &github.ListWorkflowJobsOptions{
-		Filter: "latest",
-		ListOptions: github.ListOptions{PerPage: 50},
-	})
+// FailedRunDetails finds the first failed workflow run for a commit SHA and
+// returns its display name together with the name and log URL of every failed
+// job inside that run.  Returns ("", nil, nil) when no failed run is found.
+//
+// This replaces the old FindFailedRunID + FailedRunLogs pair so callers get
+// the workflow title in one call, which is included in the @copilot message so
+// Copilot knows exactly where to look.
+func (c *Client) FailedRunDetails(ctx context.Context, sha string) (workflowName string, jobs []FailedJobInfo, err error) {
+	runs, err := c.LatestWorkflowRun(ctx, sha)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	var sb strings.Builder
-	for _, job := range jobs.Jobs {
-		if job.GetConclusion() == "failure" {
-			url, _, err := c.gh.Actions.GetWorkflowJobLogs(ctx, c.owner, c.repo, job.GetID(), 10)
-			if err != nil {
-				continue
-			}
-			sb.WriteString(fmt.Sprintf("### Job: %s\nLogs: %s\n", job.GetName(), url.String()))
+
+	var runID int64
+	for _, r := range runs {
+		if r.GetConclusion() == "failure" {
+			workflowName = r.GetName()
+			runID = r.GetID()
+			break
 		}
 	}
-	return sb.String(), nil
+	if runID == 0 {
+		return "", nil, nil
+	}
+
+	jobsResp, _, err := c.gh.Actions.ListWorkflowJobs(ctx, c.owner, c.repo, runID,
+		&github.ListWorkflowJobsOptions{
+			Filter:      "latest",
+			ListOptions: github.ListOptions{PerPage: 50},
+		})
+	if err != nil {
+		// Return the workflow name even if job details fail.
+		return workflowName, nil, err
+	}
+	for _, job := range jobsResp.Jobs {
+		if job.GetConclusion() != "failure" {
+			continue
+		}
+		logURL := ""
+		if u, _, lerr := c.gh.Actions.GetWorkflowJobLogs(ctx, c.owner, c.repo, job.GetID(), 10); lerr == nil {
+			logURL = u.String()
+		}
+		jobs = append(jobs, FailedJobInfo{Name: job.GetName(), LogURL: logURL})
+	}
+	return workflowName, jobs, nil
 }
 
-// ActiveCopilotAgentRunning returns true when there is an in-progress Copilot
-// agent run associated with a PR head SHA.  We approximate this by checking
-// whether any workflow run on that SHA has status "in_progress" or "queued".
+// ActiveCopilotAgentRunning returns true when any workflow run on the given
+// SHA is still in progress or queued.
 func (c *Client) ActiveCopilotAgentRunning(ctx context.Context, sha string) (bool, error) {
 	runs, err := c.LatestWorkflowRun(ctx, sha)
 	if err != nil {
@@ -304,8 +310,6 @@ func (c *Client) AllRunsSucceeded(ctx context.Context, sha string) (bool, bool, 
 	if len(runs) == 0 {
 		return false, false, nil
 	}
-
-	// Filter to only completed runs.
 	allSuccess := true
 	anyFailure := false
 	for _, r := range runs {
@@ -322,24 +326,12 @@ func (c *Client) AllRunsSucceeded(ctx context.Context, sha string) (bool, bool, 
 	return allSuccess, anyFailure, nil
 }
 
-// GetPR fetches a PR by number.
-func (c *Client) GetPR(ctx context.Context, prNum int) (*github.PullRequest, error) {
-	pr, _, err := c.gh.PullRequests.Get(ctx, c.owner, c.repo, prNum)
-	return pr, err
-}
-
-// GetIssue fetches an issue by number.
-func (c *Client) GetIssue(ctx context.Context, issueNum int) (*github.Issue, error) {
-	issue, _, err := c.gh.Issues.Get(ctx, c.owner, c.repo, issueNum)
-	return issue, err
-}
-
-// EnsureLabelsExist creates any missing labels with default colours.
+// EnsureLabelsExist creates any missing ai-* labels with default colours.
 func (c *Client) EnsureLabelsExist(ctx context.Context) error {
 	needed := map[string]string{
-		LabelQueue:  "0075ca",
-		LabelCoding: "e4e669",
-		LabelReview: "d93f0b",
+		c.labelQueue:  "0075ca",
+		c.labelCoding: "e4e669",
+		c.labelReview: "d93f0b",
 	}
 	existing, _, err := c.gh.Issues.ListLabels(ctx, c.owner, c.repo, &github.ListOptions{PerPage: 100})
 	if err != nil {
@@ -362,20 +354,6 @@ func (c *Client) EnsureLabelsExist(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// FindFailedRunID returns the run ID of the most recent failed workflow run for a SHA.
-func (c *Client) FindFailedRunID(ctx context.Context, sha string) (int64, error) {
-	runs, err := c.LatestWorkflowRun(ctx, sha)
-	if err != nil {
-		return 0, err
-	}
-	for _, r := range runs {
-		if r.GetConclusion() == "failure" {
-			return r.GetID(), nil
-		}
-	}
-	return 0, nil
 }
 
 // PRIsUpToDateWithBase returns true when the PR has no merge conflicts and is

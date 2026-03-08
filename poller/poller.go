@@ -99,7 +99,7 @@ func (p *Poller) tick(ctx context.Context) {
 
 // promoteFromQueue moves issues from ai-queue → ai-coding up to the concurrency limit.
 func (p *Poller) promoteFromQueue(ctx context.Context) error {
-	coding, err := p.gh.IssuesByLabel(ctx, ghclient.LabelCoding)
+	coding, err := p.gh.IssuesByLabel(ctx, p.cfg.LabelCoding)
 	if err != nil {
 		return err
 	}
@@ -108,7 +108,7 @@ func (p *Poller) promoteFromQueue(ctx context.Context) error {
 		return nil
 	}
 
-	queued, err := p.gh.IssuesByLabel(ctx, ghclient.LabelQueue)
+	queued, err := p.gh.IssuesByLabel(ctx, p.cfg.LabelQueue)
 	if err != nil {
 		return err
 	}
@@ -118,10 +118,10 @@ func (p *Poller) promoteFromQueue(ctx context.Context) error {
 	for i := 0; i < slots && i < len(queued); i++ {
 		issue := queued[i]
 		num := issue.GetNumber()
-		if err := p.gh.RemoveLabel(ctx, num, ghclient.LabelQueue); err != nil {
+		if err := p.gh.RemoveLabel(ctx, num, p.cfg.LabelQueue); err != nil {
 			return err
 		}
-		if err := p.gh.AddLabel(ctx, num, ghclient.LabelCoding); err != nil {
+		if err := p.gh.AddLabel(ctx, num, p.cfg.LabelCoding); err != nil {
 			return err
 		}
 		if err := p.gh.AssignCopilot(ctx, num); err != nil {
@@ -135,7 +135,7 @@ func (p *Poller) promoteFromQueue(ctx context.Context) error {
 // moveCodingToReview checks ai-coding issues and moves them to ai-review once
 // the associated PR is no longer a draft (Copilot finished initial coding).
 func (p *Poller) moveCodingToReview(ctx context.Context) error {
-	coding, err := p.gh.IssuesByLabel(ctx, ghclient.LabelCoding)
+	coding, err := p.gh.IssuesByLabel(ctx, p.cfg.LabelCoding)
 	if err != nil {
 		return err
 	}
@@ -156,10 +156,10 @@ func (p *Poller) moveCodingToReview(ctx context.Context) error {
 		}
 
 		// Transition to review.
-		if err := p.gh.RemoveLabel(ctx, num, ghclient.LabelCoding); err != nil {
+		if err := p.gh.RemoveLabel(ctx, num, p.cfg.LabelCoding); err != nil {
 			return err
 		}
-		if err := p.gh.AddLabel(ctx, num, ghclient.LabelReview); err != nil {
+		if err := p.gh.AddLabel(ctx, num, p.cfg.LabelReview); err != nil {
 			return err
 		}
 	}
@@ -168,7 +168,7 @@ func (p *Poller) moveCodingToReview(ctx context.Context) error {
 
 // processReviewPRs runs steps 3, 4, and 5 for every ai-review issue.
 func (p *Poller) processReviewPRs(ctx context.Context) error {
-	reviewing, err := p.gh.IssuesByLabel(ctx, ghclient.LabelReview)
+	reviewing, err := p.gh.IssuesByLabel(ctx, p.cfg.LabelReview)
 	if err != nil {
 		return err
 	}
@@ -203,8 +203,7 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		if running {
 			return nil
 		}
-		comment := "@copilot Please merge from main and address any merge conflicts."
-		if err := p.gh.PostComment(ctx, pr.GetNumber(), comment); err != nil {
+		if err := p.gh.PostComment(ctx, pr.GetNumber(), p.cfg.MergeConflictPrompt); err != nil {
 			return err
 		}
 		return nil
@@ -227,18 +226,13 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 
 	if anyFail {
 		// Post a fix request every time CI fails – no cap, keep retrying.
-		runID, err := p.gh.FindFailedRunID(ctx, pr.GetHead().GetSHA())
+		// Include the workflow name and failing job names so Copilot knows
+		// exactly where to look without having to navigate CI manually.
+		workflowName, failedJobs, err := p.gh.FailedRunDetails(ctx, pr.GetHead().GetSHA())
 		if err != nil {
 			return err
 		}
-		logs := ""
-		if runID != 0 {
-			logs, _ = p.gh.FailedRunLogs(ctx, runID)
-		}
-		body := fmt.Sprintf(
-			"@copilot CI checks are failing. Please fix the failing tests.\n\n%s",
-			logs,
-		)
+		body := p.buildCIFixMessage(workflowName, failedJobs)
 		if err := p.gh.PostReviewComment(ctx, pr.GetNumber(), body); err != nil {
 			return err
 		}
@@ -250,19 +244,20 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		return nil
 	}
 
-	// CI is green.  Send up to MaxRefinementPrompts "review against the original
+	// CI is green.  Send up to MaxRefinementRounds "review against the original
 	// issue" prompts before approving and merging.  Read the count from GitHub
 	// so it survives process restarts.
 	sent, err := p.gh.CountRefinementPromptsSent(ctx, pr.GetNumber())
 	if err != nil {
 		return err
 	}
-	if sent < ghclient.MaxRefinementPrompts {
+	if sent < p.cfg.MaxRefinementRounds {
 		body := fmt.Sprintf(
 			"@copilot CI is passing (refinement check %d of %d). "+
-				"Please review your implementation against all requirements in the "+
-				"original issue and refine anything that is missing or incomplete.\n%s",
-			sent+1, ghclient.MaxRefinementPrompts, ghclient.RefinementCommentMarker,
+				"%s\n%s",
+			sent+1, p.cfg.MaxRefinementRounds,
+			p.cfg.RefinementPrompt,
+			ghclient.RefinementCommentMarker,
 		)
 		if err := p.gh.PostReviewComment(ctx, pr.GetNumber(), body); err != nil {
 			return err
@@ -270,7 +265,7 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		return nil
 	}
 
-	// Step 5: All CI green and all refinement prompts sent – approve and merge.
+	// Step 5: All CI green and all refinement rounds sent – approve and merge.
 	if err := p.gh.ApprovePR(ctx, pr.GetNumber()); err != nil {
 		// Non-fatal if we already approved.
 		if !strings.Contains(err.Error(), "already approved") &&
@@ -282,17 +277,43 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		return err
 	}
 	// Close issue and strip ai-* labels.
-	for _, lbl := range []string{ghclient.LabelReview, ghclient.LabelCoding, ghclient.LabelQueue} {
+	for _, lbl := range []string{p.cfg.LabelReview, p.cfg.LabelCoding, p.cfg.LabelQueue} {
 		_ = p.gh.RemoveLabel(ctx, num, lbl)
 	}
 	return p.gh.CloseIssue(ctx, num)
 }
 
+// buildCIFixMessage composes the @copilot comment posted when CI fails.
+// It opens with the configurable CIFixPrompt, then immediately names the
+// failing workflow and jobs so Copilot knows where to look, and finally
+// appends per-job log URLs.
+func (p *Poller) buildCIFixMessage(workflowName string, failedJobs []ghclient.FailedJobInfo) string {
+	var sb strings.Builder
+	sb.WriteString(p.cfg.CIFixPrompt)
+
+	if workflowName != "" {
+		sb.WriteString(fmt.Sprintf("\n\n**Failing workflow:** %s", workflowName))
+	}
+	if len(failedJobs) > 0 {
+		names := make([]string, len(failedJobs))
+		for i, j := range failedJobs {
+			names[i] = j.Name
+		}
+		sb.WriteString(fmt.Sprintf("\n**Failed jobs:** %s", strings.Join(names, ", ")))
+	}
+	for _, job := range failedJobs {
+		if job.LogURL != "" {
+			sb.WriteString(fmt.Sprintf("\n\n**%s** logs: %s", job.Name, job.LogURL))
+		}
+	}
+	return sb.String()
+}
+
 // snapshot builds the current state for the TUI without doing extra API calls.
 func (p *Poller) snapshot(ctx context.Context) ([]*State, []*State, []*State) {
-	queueIssues, _ := p.gh.IssuesByLabel(ctx, ghclient.LabelQueue)
-	codingIssues, _ := p.gh.IssuesByLabel(ctx, ghclient.LabelCoding)
-	reviewIssues, _ := p.gh.IssuesByLabel(ctx, ghclient.LabelReview)
+	queueIssues, _ := p.gh.IssuesByLabel(ctx, p.cfg.LabelQueue)
+	codingIssues, _ := p.gh.IssuesByLabel(ctx, p.cfg.LabelCoding)
+	reviewIssues, _ := p.gh.IssuesByLabel(ctx, p.cfg.LabelReview)
 
 	toStates := func(issues []*github.Issue, status string) []*State {
 		states := make([]*State, 0, len(issues))

@@ -38,7 +38,7 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	gh := ghclient.New(token, cfg.GitHubOwner, cfg.GitHubRepo)
+	gh := ghclient.New(token, cfg)
 
 	// Ensure required labels exist in the target repository.
 	setupCtx, cancel := context.WithCancel(context.Background())
