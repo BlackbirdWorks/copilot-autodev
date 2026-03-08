@@ -2,8 +2,12 @@
 package ghclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -39,6 +43,13 @@ type FailedJobInfo struct {
 	LogURL string // URL to the raw logs (may be empty if unavailable)
 }
 
+// copilotAPIBase is the base URL of the GitHub Copilot API used to create
+// agent tasks directly (the same backend that powers the Agents tab).
+const copilotAPIBase = "https://api.githubcopilot.com"
+
+// copilotAPIVersion is the API version header sent to the Copilot API.
+const copilotAPIVersion = "2026-01-09"
+
 // Client wraps the GitHub SDK client with the settings from Config.
 type Client struct {
 	gh          *github.Client
@@ -50,6 +61,7 @@ type Client struct {
 	copilotUser string
 	mergeMethod string
 	mergeMsg    string
+	token       string // PAT used for Copilot API calls
 }
 
 // New creates a new Client authenticated with the provided PAT token.
@@ -66,6 +78,7 @@ func New(token string, cfg *config.Config) *Client {
 		copilotUser: cfg.CopilotUser,
 		mergeMethod: cfg.MergeMethod,
 		mergeMsg:    cfg.MergeCommitMessage,
+		token:       token,
 	}
 }
 
@@ -506,4 +519,60 @@ func TimeAgo(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+// copilotAgentJobRequest is the POST body sent to the Copilot API when
+// creating a new coding-agent task.
+type copilotAgentJobRequest struct {
+	ProblemStatement string `json:"problem_statement"`
+	EventType        string `json:"event_type"`
+}
+
+// InvokeCopilotAgent creates a new Copilot coding-agent task by calling the
+// Copilot API directly — the same backend that powers the GitHub Agents tab
+// and the `gh agent-task create` CLI command.
+//
+// This bypasses the unreliable issue-assignment and @-mention comment
+// trigger mechanisms and ensures the agent actually starts working.
+func (c *Client) InvokeCopilotAgent(ctx context.Context, prompt string) error {
+	endpoint := fmt.Sprintf(
+		"%s/agents/swe/v1/jobs/%s/%s",
+		copilotAPIBase,
+		url.PathEscape(c.owner),
+		url.PathEscape(c.repo),
+	)
+	return c.invokeAgentAt(ctx, endpoint, prompt)
+}
+
+// invokeAgentAt is the testable core of InvokeCopilotAgent.  It accepts an
+// explicit URL so tests can point it at an httptest.Server.
+func (c *Client) invokeAgentAt(ctx context.Context, endpoint, prompt string) error {
+	body, err := json.Marshal(&copilotAgentJobRequest{
+		ProblemStatement: prompt,
+		EventType:        "copilot-autocode",
+	})
+	if err != nil {
+		return fmt.Errorf("marshal copilot agent request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build copilot agent request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Copilot-Integration-Id", "copilot-autocode")
+	req.Header.Set("X-GitHub-Api-Version", copilotAPIVersion)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("invoke copilot agent: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("invoke copilot agent: unexpected status %d %s",
+			resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
+	return nil
 }

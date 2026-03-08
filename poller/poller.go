@@ -322,25 +322,31 @@ func (p *Poller) nudgeStuckCodingIssues(ctx context.Context, displayInfo map[int
 			continue
 		}
 
-		// Send a nudge: post a visible comment that @-mentions Copilot (which
-		// re-triggers the coding agent) and re-assign to fire a fresh event.
-		log.Printf("issue #%d: no Copilot activity detected after %s; nudging (attempt %d of %d)",
+		// Directly invoke the coding agent via the Copilot API — the same
+		// backend that powers the GitHub Agents tab and `gh agent-task create`.
+		// This bypasses the unreliable issue-assignment and @-mention trigger
+		// mechanisms.
+		log.Printf("issue #%d: no Copilot activity detected after %s; invoking agent via Copilot API (attempt %d of %d)",
 			num, timeout, nudgeCount+1, p.cfg.CopilotInvokeMaxRetries)
 		displayInfo[num] = &issueDisplayInfo{
-			current: fmt.Sprintf("Nudging Copilot (attempt %d of %d)", nudgeCount+1, p.cfg.CopilotInvokeMaxRetries),
+			current: fmt.Sprintf("Invoking agent via Copilot API (attempt %d of %d)", nudgeCount+1, p.cfg.CopilotInvokeMaxRetries),
 			next:    "Waiting for response",
 		}
+		nudgeBody := formatFallbackPrompt(p.cfg.FallbackIssueInvokePrompt, issue)
+		if err := p.gh.InvokeCopilotAgent(ctx, nudgeBody); err != nil {
+			log.Printf("warning: could not invoke copilot agent for issue #%d via Copilot API: %v", num, err)
+		}
+		// Post a silent tracking comment (no @-mention — the CAPI call above
+		// is the actual trigger). The embedded marker lets CountNudgesSince
+		// and LastNudgeAt reconstruct the attempt count and last-activity
+		// timestamp after a process restart.
 		comment := fmt.Sprintf(
-			"@%s Please start working on this issue.\n%s",
-			p.cfg.CopilotUser,
+			"copilot-autocode: agent task created for issue #%d (attempt %d of %d).\n%s",
+			num, nudgeCount+1, p.cfg.CopilotInvokeMaxRetries,
 			ghclient.CopilotNudgeCommentMarker,
 		)
 		if err := p.gh.PostComment(ctx, num, comment); err != nil {
 			return err
-		}
-		if err := p.gh.ReassignCopilot(ctx, num); err != nil {
-			log.Printf("warning: could not re-assign %q to issue #%d during nudge: %v",
-				p.cfg.CopilotUser, num, err)
 		}
 	}
 	return nil
@@ -612,4 +618,19 @@ func sortIssuesAsc(issues []*github.Issue) {
 			issues[j], issues[j-1] = issues[j-1], issues[j]
 		}
 	}
+}
+
+// formatFallbackPrompt expands the well-known placeholders in the configured
+// FallbackIssueInvokePrompt with live data from the given issue:
+//
+//	{issue_number} → issue number (e.g. "42")
+//	{issue_title}  → issue title
+//	{issue_url}    → HTML URL of the issue on GitHub
+func formatFallbackPrompt(template string, issue *github.Issue) string {
+	r := strings.NewReplacer(
+		"{issue_number}", fmt.Sprintf("%d", issue.GetNumber()),
+		"{issue_title}", issue.GetTitle(),
+		"{issue_url}", issue.GetHTMLURL(),
+	)
+	return r.Replace(template)
 }

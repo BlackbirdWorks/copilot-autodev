@@ -9,7 +9,65 @@ import (
 	"github.com/google/go-github/v68/github"
 )
 
-// ─── sortIssuesAsc ───────────────────────────────────────────────────────────
+// ─── formatFallbackPrompt ─────────────────────────────────────────────────────
+
+func TestFormatFallbackPrompt(t *testing.T) {
+	num := 42
+	title := "Fix the login bug"
+	url := "https://github.com/org/repo/issues/42"
+	issue := &github.Issue{
+		Number:  &num,
+		Title:   &title,
+		HTMLURL: &url,
+	}
+
+	tests := []struct {
+		name     string
+		template string
+		want     string
+	}{
+		{
+			name:     "default template expands all placeholders",
+			template: "Please start working on issue #{issue_number}: {issue_title}.\n{issue_url}",
+			want:     "Please start working on issue #42: Fix the login bug.\nhttps://github.com/org/repo/issues/42",
+		},
+		{
+			name:     "only issue_number placeholder",
+			template: "Work on #{issue_number}",
+			want:     "Work on #42",
+		},
+		{
+			name:     "only issue_title placeholder",
+			template: "Task: {issue_title}",
+			want:     "Task: Fix the login bug",
+		},
+		{
+			name:     "only issue_url placeholder",
+			template: "See {issue_url}",
+			want:     "See https://github.com/org/repo/issues/42",
+		},
+		{
+			name:     "no placeholders — template returned as-is",
+			template: "Please start working on this issue.",
+			want:     "Please start working on this issue.",
+		},
+		{
+			name:     "all placeholders appear multiple times",
+			template: "{issue_number} {issue_number} {issue_title} {issue_url}",
+			want:     "42 42 Fix the login bug https://github.com/org/repo/issues/42",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatFallbackPrompt(tc.template, issue)
+			if got != tc.want {
+				t.Errorf("formatFallbackPrompt() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 
 func TestSortIssuesAsc(t *testing.T) {
 	makeIssue := func(n int) *github.Issue { return &github.Issue{Number: &n} }
