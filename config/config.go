@@ -85,6 +85,17 @@ CopilotInvokeTimeoutSeconds int `yaml:"copilot_invoke_timeout_seconds"`
 // CopilotInvokeMaxRetries is how many nudge attempts the orchestrator will
 // make before giving up and returning the issue to the queue.  Default: 3.
 CopilotInvokeMaxRetries int `yaml:"copilot_invoke_max_retries"`
+
+// FallbackIssueInvokePrompt is the body of the nudge comment posted on an
+// issue when the Copilot coding agent has not started within the timeout.
+// The following placeholders are expanded at runtime:
+//
+//	{issue_number} — the issue number (e.g. 42)
+//	{issue_title}  — the issue title
+//	{issue_url}    — the URL of the issue on GitHub
+//
+// Default: a built-in prompt that references all three fields.
+FallbackIssueInvokePrompt string `yaml:"fallback_issue_invoke_prompt"`
 }
 
 // Load reads a YAML config file from path and returns a populated Config with
@@ -113,6 +124,7 @@ AIMergeResolverCmd:          "gemini",
 AIMergeResolverPrompt:       "Please resolve all git merge conflicts in this repository. Make minimal changes to resolve the conflicts while preserving the intent of both sides.",
 CopilotInvokeTimeoutSeconds: 600,
 CopilotInvokeMaxRetries:     3,
+FallbackIssueInvokePrompt:   "Please start working on issue #{issue_number}: {issue_title}.\n{issue_url}",
 }
 if err := yaml.Unmarshal(data, cfg); err != nil {
 return nil, fmt.Errorf("parse config file %q: %w", path, err)

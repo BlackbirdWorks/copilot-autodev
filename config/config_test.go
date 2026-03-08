@@ -73,6 +73,12 @@ func TestConfigLoad(t *testing.T) {
 				if c.CopilotInvokeMaxRetries != 3 {
 					t.Errorf("CopilotInvokeMaxRetries = %d; want 3", c.CopilotInvokeMaxRetries)
 				}
+				if c.FallbackIssueInvokePrompt == "" {
+					t.Error("FallbackIssueInvokePrompt must not be empty")
+				}
+				if !strings.Contains(c.FallbackIssueInvokePrompt, "{issue_number}") {
+					t.Errorf("FallbackIssueInvokePrompt = %q; want it to contain {issue_number}", c.FallbackIssueInvokePrompt)
+				}
 			},
 		},
 		{

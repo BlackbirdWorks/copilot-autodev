@@ -330,9 +330,11 @@ func (p *Poller) nudgeStuckCodingIssues(ctx context.Context, displayInfo map[int
 			current: fmt.Sprintf("Nudging Copilot (attempt %d of %d)", nudgeCount+1, p.cfg.CopilotInvokeMaxRetries),
 			next:    "Waiting for response",
 		}
+		nudgeBody := formatFallbackPrompt(p.cfg.FallbackIssueInvokePrompt, issue)
 		comment := fmt.Sprintf(
-			"@%s Please start working on this issue.\n%s",
+			"@%s %s\n%s",
 			p.cfg.CopilotUser,
+			nudgeBody,
 			ghclient.CopilotNudgeCommentMarker,
 		)
 		if err := p.gh.PostComment(ctx, num, comment); err != nil {
@@ -612,4 +614,19 @@ func sortIssuesAsc(issues []*github.Issue) {
 			issues[j], issues[j-1] = issues[j-1], issues[j]
 		}
 	}
+}
+
+// formatFallbackPrompt expands the well-known placeholders in the configured
+// FallbackIssueInvokePrompt with live data from the given issue:
+//
+//	{issue_number} → issue number (e.g. "42")
+//	{issue_title}  → issue title
+//	{issue_url}    → HTML URL of the issue on GitHub
+func formatFallbackPrompt(template string, issue *github.Issue) string {
+	r := strings.NewReplacer(
+		"{issue_number}", fmt.Sprintf("%d", issue.GetNumber()),
+		"{issue_title}", issue.GetTitle(),
+		"{issue_url}", issue.GetHTMLURL(),
+	)
+	return r.Replace(template)
 }
