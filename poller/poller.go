@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/BlackbirdWorks/copilot-autocode/config"
@@ -38,18 +37,14 @@ type Poller struct {
 	cfg    *config.Config
 	gh     *ghclient.Client
 	Events chan Event
-
-	mu          sync.Mutex
-	refinements map[int]int // issueNum -> number of green-CI refinement prompts sent
 }
 
 // New creates a Poller ready to Start.
 func New(cfg *config.Config, gh *ghclient.Client) *Poller {
 	return &Poller{
-		cfg:         cfg,
-		gh:          gh,
-		Events:      make(chan Event, 1),
-		refinements: make(map[int]int),
+		cfg:    cfg,
+		gh:     gh,
+		Events: make(chan Event, 1),
 	}
 }
 
@@ -212,8 +207,6 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 		if err := p.gh.PostComment(ctx, pr.GetNumber(), comment); err != nil {
 			return err
 		}
-		// Reset refinement counter: the agent is starting a fresh run.
-		p.setRefinements(num, 0)
 		return nil
 	}
 
@@ -258,15 +251,18 @@ func (p *Poller) processOne(ctx context.Context, issue *github.Issue) error {
 	}
 
 	// CI is green.  Send up to MaxRefinementPrompts "review against the original
-	// issue" prompts before approving and merging.
-	sent := p.getRefinements(num)
+	// issue" prompts before approving and merging.  Read the count from GitHub
+	// so it survives process restarts.
+	sent, err := p.gh.CountRefinementPromptsSent(ctx, pr.GetNumber())
+	if err != nil {
+		return err
+	}
 	if sent < ghclient.MaxRefinementPrompts {
-		p.incRefinements(num)
 		body := fmt.Sprintf(
 			"@copilot CI is passing (refinement check %d of %d). "+
 				"Please review your implementation against all requirements in the "+
-				"original issue and refine anything that is missing or incomplete.",
-			sent+1, ghclient.MaxRefinementPrompts,
+				"original issue and refine anything that is missing or incomplete.\n%s",
+			sent+1, ghclient.MaxRefinementPrompts, ghclient.RefinementCommentMarker,
 		)
 		if err := p.gh.PostReviewComment(ctx, pr.GetNumber(), body); err != nil {
 			return err
@@ -322,30 +318,6 @@ func (p *Poller) snapshot(ctx context.Context) ([]*State, []*State, []*State) {
 	return toStates(queueIssues, "queue"),
 		toStates(codingIssues, "coding"),
 		reviewStates
-}
-
-// -- refinement counter helpers ----------------------------------------------
-
-func (p *Poller) getRefinements(issueNum int) int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.refinements[issueNum]
-}
-
-func (p *Poller) incRefinements(issueNum int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.refinements[issueNum]++
-}
-
-func (p *Poller) setRefinements(issueNum, n int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if n == 0 {
-		delete(p.refinements, issueNum)
-	} else {
-		p.refinements[issueNum] = n
-	}
 }
 
 // -- helpers -----------------------------------------------------------------

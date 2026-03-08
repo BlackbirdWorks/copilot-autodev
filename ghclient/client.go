@@ -23,6 +23,12 @@ const (
 	// requirements once CI is green.  Only after all prompts have been sent
 	// (and CI remains green) will the PR be approved and merged.
 	MaxRefinementPrompts = 3
+
+	// RefinementCommentMarker is an invisible HTML comment embedded in every
+	// refinement prompt.  The orchestrator counts PR reviews containing this
+	// marker to determine how many refinement rounds have already been sent,
+	// which means the count survives process restarts.
+	RefinementCommentMarker = "<!-- copilot-autocode:refinement -->"
 )
 
 // Client wraps the GitHub SDK client.
@@ -193,6 +199,31 @@ func (c *Client) PostReviewComment(ctx context.Context, prNum int, body string) 
 		Event: &event,
 	})
 	return err
+}
+
+// CountRefinementPromptsSent returns the number of refinement prompts the
+// orchestrator has already posted on the given PR by counting PR reviews whose
+// body contains RefinementCommentMarker.  Reading this count from GitHub means
+// it survives process restarts.
+func (c *Client) CountRefinementPromptsSent(ctx context.Context, prNum int) (int, error) {
+	count := 0
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		reviews, resp, err := c.gh.PullRequests.ListReviews(ctx, c.owner, c.repo, prNum, opts)
+		if err != nil {
+			return 0, err
+		}
+		for _, r := range reviews {
+			if strings.Contains(r.GetBody(), RefinementCommentMarker) {
+				count++
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return count, nil
 }
 
 // ApprovePR approves the PR.
