@@ -68,6 +68,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.review = msg.Review
 		m.lastRun = msg.LastRun
 		m.lastErr = msg.Err
+		if len(msg.Warnings) > 0 {
+			// Keep only the most recent warning for display.
+			m.lastWarn = msg.Warnings[len(msg.Warnings)-1]
+		}
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -224,6 +228,15 @@ func (m Model) renderStatus() string {
 		status = lipgloss.JoinVertical(lipgloss.Left,
 			status,
 			errorStyle.Render("⚠  "+errStr),
+		)
+	} else if m.lastWarn != "" {
+		warnStr := m.lastWarn
+		if len(warnStr) > 80 {
+			warnStr = warnStr[:77] + "…"
+		}
+		status = lipgloss.JoinVertical(lipgloss.Left,
+			status,
+			warnStyle.Render("⚠  "+warnStr),
 		)
 	}
 	return status

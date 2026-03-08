@@ -59,6 +59,16 @@ merge_conflict_prompt: "@copilot Please merge from main and address any merge co
 # and per-job log URLs after this text automatically.
 ci_fix_prompt: "@copilot Please fix the failing CI checks."
 
+# ── Copilot invoke / nudge ─────────────────────────────────────────────────────
+# If the Copilot coding agent has not opened a PR within this many seconds
+# of being assigned, the orchestrator posts a nudge comment (@-mentioning
+# Copilot) and re-assigns it to fire a fresh trigger event.  Minimum: 30.
+copilot_invoke_timeout_seconds: 600   # 10 minutes
+
+# Maximum number of nudge attempts before the issue is returned to ai-queue
+# for manual review (with an explanatory comment).
+copilot_invoke_max_retries: 3
+
 # ── Local AI merge-conflict fallback ──────────────────────────────────────────
 
 # Number of times @copilot is asked to fix merge conflicts before the

@@ -86,6 +86,12 @@ func (p *Poller) tick(ctx context.Context) {
 		evt.Err = fmt.Errorf("coding→review: %w", err)
 	}
 
+	// Step 2.5: Nudge coding issues where Copilot has not started within the
+	// configured timeout (no PR opened, no active agent run).
+	if err := p.nudgeStuckCodingIssues(ctx); err != nil && evt.Err == nil {
+		evt.Err = fmt.Errorf("nudge stuck issues: %w", err)
+	}
+
 	// Step 3+4+5: Handle all review-stage PRs.
 	if err := p.processReviewPRs(ctx); err != nil && evt.Err == nil {
 		evt.Err = fmt.Errorf("review PRs: %w", err)
@@ -173,6 +179,117 @@ func (p *Poller) moveCodingToReview(ctx context.Context) error {
 		}
 		if err := p.gh.AddLabel(ctx, num, p.cfg.LabelReview); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// nudgeStuckCodingIssues detects issues in ai-coding where the Copilot coding
+// agent has not opened a PR within the configured timeout, and re-triggers it.
+// The orchestrator determines "last activity" as the later of:
+//   - when the ai-coding label was applied, and
+//   - when the most recent nudge comment was posted.
+//
+// If the number of nudges for the current coding cycle reaches
+// CopilotInvokeMaxRetries the issue is returned to ai-queue with an
+// explanatory comment so a human can investigate.
+func (p *Poller) nudgeStuckCodingIssues(ctx context.Context) error {
+	coding, err := p.gh.IssuesByLabel(ctx, p.cfg.LabelCoding)
+	if err != nil {
+		return err
+	}
+
+	timeout := time.Duration(p.cfg.CopilotInvokeTimeoutSeconds) * time.Second
+
+	for _, issue := range coding {
+		num := issue.GetNumber()
+
+		// Skip issues where Copilot has already opened a PR.
+		pr, err := p.gh.OpenPRForIssue(ctx, num)
+		if err != nil {
+			log.Printf("warning: nudge check: could not look up PR for issue #%d: %v", num, err)
+			continue
+		}
+		if pr != nil {
+			continue
+		}
+
+		// (No PR means no commit SHA, so there is nothing to check with
+		// ActiveCopilotAgentRunning here — proceed straight to timing checks.)
+
+		// Determine when the ai-coding label was applied for this cycle.
+		codingAt, err := p.gh.CodingLabeledAt(ctx, num, p.cfg.LabelCoding)
+		if err != nil || codingAt.IsZero() {
+			// Can't determine timing — skip this tick.
+			if err != nil {
+				log.Printf("warning: nudge check: could not determine coding label time for issue #%d: %v", num, err)
+			}
+			continue
+		}
+
+		// Count nudges sent since the coding label was applied (so that the
+		// counter resets if the issue cycles back through the queue).
+		nudgeCount, err := p.gh.CountNudgesSince(ctx, num, codingAt)
+		if err != nil {
+			log.Printf("warning: nudge check: could not count nudges for issue #%d: %v", num, err)
+			continue
+		}
+
+		// Find the most recent nudge to use as the "last activity" timestamp.
+		lastNudge, err := p.gh.LastNudgeAt(ctx, num)
+		if err != nil {
+			log.Printf("warning: nudge check: could not fetch last nudge time for issue #%d: %v", num, err)
+			continue
+		}
+
+		lastActivity := codingAt
+		if lastNudge.After(lastActivity) {
+			lastActivity = lastNudge
+		}
+
+		if time.Since(lastActivity) < timeout {
+			// Still within the wait window — nothing to do yet.
+			continue
+		}
+
+		if nudgeCount >= p.cfg.CopilotInvokeMaxRetries {
+			// Exhausted all nudge attempts — return the issue to the queue.
+			log.Printf("issue #%d: Copilot did not start after %d nudge attempt(s); returning to ai-queue",
+				num, nudgeCount)
+			notice := fmt.Sprintf(
+				"⚠️ copilot-autocode: Copilot has not started after %d nudge attempt(s). "+
+					"Returning this issue to the queue for manual review. "+
+					"Check that `copilot_user` in config.yaml is correct and that "+
+					"the GitHub Copilot coding agent is enabled for this repository.",
+				nudgeCount,
+			)
+			if err := p.gh.PostComment(ctx, num, notice); err != nil {
+				log.Printf("warning: could not post exhaustion notice on issue #%d: %v", num, err)
+			}
+			if err := p.gh.RemoveLabel(ctx, num, p.cfg.LabelCoding); err != nil {
+				return err
+			}
+			if err := p.gh.AddLabel(ctx, num, p.cfg.LabelQueue); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Send a nudge: post a visible comment that @-mentions Copilot (which
+		// re-triggers the coding agent) and re-assign to fire a fresh event.
+		log.Printf("issue #%d: no Copilot activity detected after %s; nudging (attempt %d of %d)",
+			num, timeout, nudgeCount+1, p.cfg.CopilotInvokeMaxRetries)
+		comment := fmt.Sprintf(
+			"@%s Please start working on this issue.\n%s",
+			p.cfg.CopilotUser,
+			ghclient.CopilotNudgeCommentMarker,
+		)
+		if err := p.gh.PostComment(ctx, num, comment); err != nil {
+			return err
+		}
+		if err := p.gh.ReassignCopilot(ctx, num); err != nil {
+			log.Printf("warning: could not re-assign %q to issue #%d during nudge: %v",
+				p.cfg.CopilotUser, num, err)
 		}
 	}
 	return nil

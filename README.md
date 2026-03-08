@@ -14,6 +14,11 @@ through CI feedback and merging.
 - **State-machine poller** ticking every 45 s (configurable) using only GitHub
   labels, assignees, PR states, and workflow-run statuses as state storage
 - **Automatic Queue → Coding promotion** honouring `max_concurrent_issues`
+- **Automatic Copilot nudge** — if the Copilot coding agent does not open a PR
+  within `copilot_invoke_timeout_seconds` (default 10 min) the orchestrator
+  posts an @-mention comment and re-assigns the agent to re-trigger it; after
+  `copilot_invoke_max_retries` failed nudges the issue is returned to the queue
+  with an explanatory comment
 - **Draft PR detection** — waits for Copilot to finish the initial coding pass
   before moving to review
 - **Merge-conflict handling** — posts `@copilot Please merge from main…` and
@@ -122,6 +127,10 @@ main.go
          │ ai-coding │  + assign copilot user
          └────┬──────┘
               │  PR no longer draft && no active agent run
+              │
+              │  [no PR after copilot_invoke_timeout_seconds?]
+              │  → post nudge comment (@<copilot_user>) + re-assign
+              │  → after copilot_invoke_max_retries: return to ai-queue
               ▼
          ┌───────────┐
          │ ai-review │
@@ -130,7 +139,7 @@ main.go
          │                                   │
     branch behind?                    CI status?
          │                                   │
-   post @copilot            failure (×3) → post fix request
+   post @copilot            failure (×∞) → post fix request
    merge comment            success → approve + merge + close
 ```
 

@@ -24,6 +24,13 @@ const (
 	// tells the orchestrator how many @copilot attempts have been made so far,
 	// which means the count survives process restarts.
 	MergeConflictCommentMarker = "<!-- copilot-autocode:merge-conflict -->"
+
+	// CopilotNudgeCommentMarker is an invisible HTML comment embedded in every
+	// nudge comment posted when the Copilot coding agent has not started
+	// within the configured timeout.  Counting these comments tells the
+	// orchestrator how many re-trigger attempts have been made for the current
+	// coding cycle so that it can enforce CopilotInvokeMaxRetries.
+	CopilotNudgeCommentMarker = "<!-- copilot-autocode:nudge -->"
 )
 
 // FailedJobInfo describes a single failed CI job.
@@ -398,6 +405,92 @@ func (c *Client) PRIsUpToDateWithBase(ctx context.Context, pr *github.PullReques
 		return false, err
 	}
 	return !behind, nil
+}
+
+// ReassignCopilot removes and then re-adds the Copilot user as an assignee on
+// the issue so that a fresh "assigned" webhook event is fired, re-triggering
+// the coding agent.  The remove step is best-effort; failure is ignored.
+func (c *Client) ReassignCopilot(ctx context.Context, issueNum int) error {
+	// Best-effort unassign – ignore errors (e.g. user was never assigned).
+	_, _, _ = c.gh.Issues.RemoveAssignees(ctx, c.owner, c.repo, issueNum, []string{c.copilotUser})
+	_, _, err := c.gh.Issues.AddAssignees(ctx, c.owner, c.repo, issueNum, []string{c.copilotUser})
+	return err
+}
+
+// CodingLabeledAt returns the most recent time the given label was applied to
+// the issue by scanning the issue's event timeline.  Returns zero time if no
+// such event is found.
+func (c *Client) CodingLabeledAt(ctx context.Context, issueNum int, label string) (time.Time, error) {
+	var latest time.Time
+	opts := &github.ListOptions{PerPage: 100}
+	for {
+		events, resp, err := c.gh.Issues.ListIssueEvents(ctx, c.owner, c.repo, issueNum, opts)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("list issue events (#%d): %w", issueNum, err)
+		}
+		for _, e := range events {
+			if e.GetEvent() == "labeled" && e.GetLabel().GetName() == label {
+				if t := e.GetCreatedAt().Time; t.After(latest) {
+					latest = t
+				}
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return latest, nil
+}
+
+// CountNudgesSince returns the number of nudge comments posted on the issue
+// after the given time.  Pass zero time to count all nudge comments.
+func (c *Client) CountNudgesSince(ctx context.Context, issueNum int, since time.Time) (int, error) {
+	count := 0
+	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		comments, resp, err := c.gh.Issues.ListComments(ctx, c.owner, c.repo, issueNum, opts)
+		if err != nil {
+			return 0, fmt.Errorf("list comments (#%d): %w", issueNum, err)
+		}
+		for _, cm := range comments {
+			if strings.Contains(cm.GetBody(), CopilotNudgeCommentMarker) {
+				if since.IsZero() || cm.GetCreatedAt().Time.After(since) {
+					count++
+				}
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return count, nil
+}
+
+// LastNudgeAt returns the timestamp of the most recent nudge comment on the
+// issue, or zero time if none exist.
+func (c *Client) LastNudgeAt(ctx context.Context, issueNum int) (time.Time, error) {
+	var latest time.Time
+	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		comments, resp, err := c.gh.Issues.ListComments(ctx, c.owner, c.repo, issueNum, opts)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("list comments (#%d): %w", issueNum, err)
+		}
+		for _, cm := range comments {
+			if strings.Contains(cm.GetBody(), CopilotNudgeCommentMarker) {
+				if t := cm.GetCreatedAt().Time; t.After(latest) {
+					latest = t
+				}
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+	return latest, nil
 }
 
 // TimeAgo returns a short human-readable relative time string.
