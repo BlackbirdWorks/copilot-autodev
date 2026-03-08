@@ -10,10 +10,15 @@ import (
 
 // Config holds the application configuration.
 type Config struct {
-	GitHubOwner          string `yaml:"github_owner"`
-	GitHubRepo           string `yaml:"github_repo"`
-	MaxConcurrentIssues  int    `yaml:"max_concurrent_issues"`
-	PollIntervalSeconds  int    `yaml:"poll_interval_seconds"`
+	GitHubOwner         string `yaml:"github_owner"`
+	GitHubRepo          string `yaml:"github_repo"`
+	MaxConcurrentIssues int    `yaml:"max_concurrent_issues"`
+	PollIntervalSeconds int    `yaml:"poll_interval_seconds"`
+	// RefinementPrompt is the instructional text sent to @copilot after CI
+	// passes.  The orchestrator prefixes it with the refinement-check counter
+	// and appends the machine-readable marker; users only need to supply the
+	// "what to do" text.  Defaults to a sensible built-in prompt.
+	RefinementPrompt string `yaml:"refinement_prompt"`
 }
 
 // Load reads config.yaml from the given path and returns a populated Config.
