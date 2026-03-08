@@ -1,0 +1,74 @@
+# config.yaml.example — copy to config.yaml and fill in your values.
+# Every option is shown with its default.  Only github_owner and github_repo
+# are required; all other keys are optional.
+
+# ── Repository ────────────────────────────────────────────────────────────────
+
+# GitHub organisation or user that owns the target repository.
+github_owner: "my-org"
+
+# Name of the target repository.
+github_repo: "my-repo"
+
+# ── Labels ────────────────────────────────────────────────────────────────────
+# The orchestrator uses three labels to track issues through the workflow.
+# Change these if your repository already uses different label names.
+
+label_queue:  "ai-queue"    # issue is waiting to be picked up
+label_coding: "ai-coding"   # Copilot is actively writing code
+label_review: "ai-review"   # PR is open and being tested / refined
+
+# ── Agent ─────────────────────────────────────────────────────────────────────
+
+# GitHub username of the Copilot coding agent assigned to issues.
+copilot_user: "copilot"
+
+# Maximum number of issues in the ai-coding state at the same time.
+max_concurrent_issues: 3
+
+# How often (in seconds) the orchestrator polls GitHub.  Minimum: 10.
+poll_interval_seconds: 45
+
+# ── Refinement ────────────────────────────────────────────────────────────────
+
+# Number of times @copilot is asked to review its work against the original
+# issue requirements once CI is green.  The PR is only approved and merged
+# after all rounds complete.  Set to 0 to merge as soon as CI passes.
+max_refinement_rounds: 3
+
+# The instruction sent to @copilot for each refinement round.
+# The orchestrator prepends the round counter (e.g. "refinement check 1 of 3")
+# and appends a machine-readable marker automatically.
+refinement_prompt: "Please review your implementation against all requirements in the original issue and refine anything that is missing or incomplete."
+
+# ── Merge ─────────────────────────────────────────────────────────────────────
+
+# Merge strategy used when auto-merging a PR.  Accepted: squash, merge, rebase.
+merge_method: "squash"
+
+# Commit message written when the PR is merged.
+merge_commit_message: "Auto-merged by copilot-autocode"
+
+# ── Prompt templates ──────────────────────────────────────────────────────────
+
+# Comment posted when the PR branch is behind or has merge conflicts.
+merge_conflict_prompt: "@copilot Please merge from main and address any merge conflicts."
+
+# Opening instruction sent to @copilot when CI fails.
+# The orchestrator always appends the failing workflow name, job names,
+# and per-job log URLs after this text automatically.
+ci_fix_prompt: "@copilot Please fix the failing CI checks."
+
+# ── Local AI merge-conflict fallback ──────────────────────────────────────────
+
+# Number of times @copilot is asked to fix merge conflicts before the
+# orchestrator falls back to running a local AI CLI to resolve them.
+max_merge_conflict_retries: 3
+
+# The AI CLI executable used for local merge-conflict resolution.
+# It is called as: <cmd> "<prompt>" from the root of a fresh clone of the
+# PR branch.  Default: "gemini" (Google Gemini CLI).
+ai_merge_resolver_cmd: "gemini"
+
+# The prompt passed to ai_merge_resolver_cmd.
+ai_merge_resolver_prompt: "Please resolve all git merge conflicts in this repository. Make minimal changes to resolve the conflicts while preserving the intent of both sides."
