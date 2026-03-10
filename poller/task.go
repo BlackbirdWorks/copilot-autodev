@@ -121,9 +121,10 @@ func (t *PRTask) resolveConflictsLocally(ctx context.Context, _ int) (bool, erro
 		delay := time.Duration(t.P.cfg.LocalMergeDelayMinutes) * time.Minute
 		if time.Since(lastFailure) < delay {
 			t.Display(IssueDisplayInfo{
-				Current: fmt.Sprintf("Waiting for local AI merge retry delay (%d min)", t.P.cfg.LocalMergeDelayMinutes),
-				Next:    "Retrying local AI merge resolution",
-				PR:      t.PR,
+				Current:      fmt.Sprintf("Waiting for local AI merge retry delay (%d min)", t.P.cfg.LocalMergeDelayMinutes),
+				Next:         "Retrying local AI merge resolution",
+				PR:           t.PR,
+				MergeLogPath: resolver.LogPath(t.PR.GetNumber()),
 			})
 			return true, nil
 		}
@@ -144,10 +145,11 @@ func (t *PRTask) resolveConflictsLocally(ctx context.Context, _ int) (bool, erro
 	}
 
 	t.Display(IssueDisplayInfo{
-		Current:     "Running local AI merge resolution",
-		Next:        "Pushing resolved changes",
-		PR:          t.PR,
-		AgentStatus: "pending",
+		Current:      "Running local AI merge resolution",
+		Next:         "Pushing resolved changes",
+		PR:           t.PR,
+		AgentStatus:  "pending",
+		MergeLogPath: resolver.LogPath(t.PR.GetNumber()),
 	})
 
 	prd := resolver.PRDetails{
