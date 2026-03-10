@@ -85,4 +85,15 @@ var (
 
 	// Selected item indicator prefix.
 	selectedIndicator = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
+
+	// Detail pane styles.
+	detailLabelStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#5a9fe8"))
+	detailValueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#dddddd"))
+	detailDimStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#777777"))
+	detailSepStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#444444"))
+
+	// Timeline / activity feed styles.
+	timelineTimeStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#777777")).Width(20)
+	timelineActorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#5a9fe8"))
+	timelineEventStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#dddddd"))
 )

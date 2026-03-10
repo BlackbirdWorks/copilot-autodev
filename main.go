@@ -17,9 +17,11 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/gen2brain/beeep"
 
 	"github.com/BlackbirdWorks/copilot-autocode/config"
 	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
@@ -87,7 +89,7 @@ func main() {
 	p := poller.New(cfg, gh, token)
 
 	// Create the Bubble Tea model with the poller's command channel.
-	model := tui.New(cfg.GitHubOwner, cfg.GitHubRepo, cfg.PollIntervalSeconds, p.Commands)
+	model := tui.New(cfg.GitHubOwner, cfg.GitHubRepo, cfg.PollIntervalSeconds, p.Commands, gh)
 
 	prog := tea.NewProgram(
 		model,
@@ -124,9 +126,56 @@ func main() {
 	p.Start(ctx)
 
 	// Bridge poller events → Bubble Tea messages in a goroutine.
+	// Also detect state transitions for desktop notifications.
 	go func() {
+		prevReview := make(map[int]string) // issue number → current status
 		for evt := range p.Events {
 			prog.Send(tui.PollEvent{Event: evt})
+
+			if !cfg.NotificationsEnabled {
+				continue
+			}
+
+			// Build current review map.
+			currReview := make(map[int]string, len(evt.Review))
+			for _, s := range evt.Review {
+				num := s.Issue.GetNumber()
+				currReview[num] = s.CurrentStatus
+			}
+
+			// Detect PRs that disappeared from review (merged).
+			for num := range prevReview {
+				if _, still := currReview[num]; !still {
+					_ = beeep.Notify(
+						"PR Merged",
+						fmt.Sprintf("Issue #%d completed and merged", num),
+						"",
+					)
+				}
+			}
+
+			// Detect new problematic states.
+			for num, status := range currReview {
+				prev := prevReview[num]
+				if status == prev {
+					continue
+				}
+				if strings.Contains(status, "needs manual fix") {
+					_ = beeep.Notify(
+						"Manual Fix Needed",
+						fmt.Sprintf("Issue #%d: merge conflicts need manual resolution", num),
+						"",
+					)
+				} else if strings.Contains(status, "unresponsive") {
+					_ = beeep.Notify(
+						"Agent Timeout",
+						fmt.Sprintf("Issue #%d: agent unresponsive after retries", num),
+						"",
+					)
+				}
+			}
+
+			prevReview = currReview
 		}
 	}()
 

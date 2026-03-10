@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"context"
+
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -78,6 +80,44 @@ type clearActionMsg struct{}
 // mergeLogReloadMsg is fired every 500 ms to re-read the merge log file.
 type mergeLogReloadMsg struct{}
 
+// startupReadyMsg fires 2 seconds after the first poll, dismissing the loading screen.
+type startupReadyMsg struct{}
+
+// loadingPunTickMsg rotates the loading pun every 1.4 s during startup.
+type loadingPunTickMsg struct{}
+
+func loadingPunTick() tea.Cmd {
+	return tea.Tick(1400*time.Millisecond, func(_ time.Time) tea.Msg {
+		return loadingPunTickMsg{}
+	})
+}
+
+// loadingPuns is the list of punny messages cycled on the startup screen.
+var loadingPuns = []string{
+	"Pulling PRs by their bootstraps...",
+	"Teaching Copilot to parallel park...",
+	"Resolving conflicts the civilised way...",
+	"git blame --nobody",
+	"Rate-limiting our enthusiasm...",
+	"Compiling good vibes...",
+	"Untangling the merge spaghetti...",
+	"Making tests pass (or at least fail consistently)...",
+	"Consulting the rubber duck...",
+	"Counting workflow runs: one... two... many...",
+	"Waiting for CI: the noblest of pursuits...",
+	"Nudging Copilot awake...",
+	"Dispatching agents into the void...",
+	"SHA-ing my head in disbelief...",
+	"Squashing bugs and commits alike...",
+	"Rebasing reality on top of main...",
+}
+
+// activityFeedMsg delivers fetched timeline entries to the TUI.
+type activityFeedMsg struct {
+	entries []ghclient.TimelineEntry
+	err     error
+}
+
 func mergeLogReloadTick() tea.Cmd {
 	return tea.Tick(500*time.Millisecond, func(_ time.Time) tea.Msg {
 		return mergeLogReloadMsg{}
@@ -121,15 +161,32 @@ type Model struct {
 	mergeLogTailing  bool     // true when the merge log viewer is live-tailing
 	mergeLogFilePath string   // path being tailed (so reload can re-read it)
 
+	// Detail pane overlay state.
+	detailPaneOpen   bool
+	detailPaneLines  []string
+	detailPaneScroll int
+
+	// Activity feed overlay state.
+	activityFeedOpen   bool
+	activityFeedLines  []string
+	activityFeedScroll int
+
+	// GitHub client for fetching timeline data.
+	gh *ghclient.Client
+
 	owner    string
 	repo     string
 	interval int
+
+	// Startup loading screen state.
+	startupDone   bool // true once the first poll + grace period is done
+	loadingPunIdx int  // index into loadingPuns
 }
 
 // New creates a fresh Model.  commandCh is used to send actions back to the
 // poller (e.g. retry merge resolution).  It may be nil if no commands are
-// needed.
-func New(owner, repo string, interval int, commandCh chan<- poller.Command) Model {
+// needed.  gh is used for fetching timeline data (activity feed).
+func New(owner, repo string, interval int, commandCh chan<- poller.Command, gh *ghclient.Client) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Spinner{
 		Frames: []string{"-", "\\", "|", "/"},
@@ -144,12 +201,13 @@ func New(owner, repo string, interval int, commandCh chan<- poller.Command) Mode
 		repo:        repo,
 		interval:    interval,
 		commandCh:   commandCh,
+		gh:          gh,
 	}
 }
 
-// Init starts the spinner and the per-second countdown tick.
+// Init starts the spinner, per-second countdown tick, and loading pun rotator.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, secondTick())
+	return tea.Batch(m.spinner.Tick, secondTick(), loadingPunTick())
 }
 
 // columnItems returns the items slice for the given column index.
@@ -167,11 +225,11 @@ func (m Model) columnItems(col int) []*poller.State {
 }
 
 // clampSelection ensures selectedRow is within bounds for the current column.
-func (m *Model) clampSelection() {
+func (m Model) clampSelection() Model {
 	items := m.columnItems(m.selectedCol)
 	if len(items) == 0 {
 		m.selectedRow = 0
-		return
+		return m
 	}
 	if m.selectedRow >= len(items) {
 		m.selectedRow = len(items) - 1
@@ -179,6 +237,7 @@ func (m *Model) clampSelection() {
 	if m.selectedRow < 0 {
 		m.selectedRow = 0
 	}
+	return m
 }
 
 // selectedState returns the currently selected State, or nil if the column is empty.
@@ -196,12 +255,20 @@ const mergeFixStatus = "Merge conflicts unresolved \u2014 needs manual fix"
 
 // Update handles all messages.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// When log viewer is open, it consumes all key input.
-	if m.logViewerOpen {
+	// When any overlay is open, it consumes all key input.
+	if m.logViewerOpen || m.detailPaneOpen || m.activityFeedOpen {
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			return m.updateLogViewer(keyMsg)
+			if m.logViewerOpen {
+				return m.updateLogViewer(keyMsg)
+			}
+			if m.detailPaneOpen {
+				return m.updateOverlayScroll(keyMsg, "detail")
+			}
+			if m.activityFeedOpen {
+				return m.updateOverlayScroll(keyMsg, "activity")
+			}
 		}
-		// Still handle window resize and spinner ticks.
+		// Still handle window resize, spinner ticks, log events, and activity feed results.
 		switch msg := msg.(type) {
 		case tea.WindowSizeMsg:
 			m.width = msg.Width
@@ -215,6 +282,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logs[m.logHead] = msg.Message
 			m.logHead = (m.logHead + 1) % len(m.logs)
 			return m, nil
+		case activityFeedMsg:
+			return m.handleActivityFeedMsg(msg)
 		}
 		return m, nil
 	}
@@ -254,25 +323,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "left", "h":
 			if m.selectedCol > 0 {
 				m.selectedCol--
-				m.clampSelection()
+				m = m.clampSelection()
 			}
 			return m, nil
 		case "right", "l":
 			if m.selectedCol < tuiNumCols-1 {
 				m.selectedCol++
-				m.clampSelection()
+				m = m.clampSelection()
 			}
 			return m, nil
 
 		// Actions.
 		case "r":
-			return m, m.handleRetryMerge()
+			var cmd tea.Cmd
+			m, cmd = m.handleRetryMerge()
+			return m, cmd
+		case "t":
+			var cmd tea.Cmd
+			m, cmd = m.handleTakeover()
+			return m, cmd
+		case "f":
+			var cmd tea.Cmd
+			m, cmd = m.handleForceRerunCI()
+			return m, cmd
+		case "+", "=":
+			var cmd tea.Cmd
+			m, cmd = m.handlePriority(1)
+			return m, cmd
+		case "-":
+			var cmd tea.Cmd
+			m, cmd = m.handlePriority(-1)
+			return m, cmd
+
+		// Overlays.
+		case "enter":
+			m = m.openDetailPane()
+			return m, nil
+		case "a":
+			return m.openActivityFeed()
 
 		// Log viewers.
 		case "L":
 			m.mergeLogFilePath = m.logFilePath
 			m.mergeLogTailing = true
-			m.openLogFile(m.logFilePath)
+			m = m.openLogFile(m.logFilePath)
 			return m, mergeLogReloadTick()
 		case "v":
 			return m.openMergeLogCmd()
@@ -300,22 +394,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Keep only the most recent warning for display.
 			m.lastWarn = msg.Warnings[len(msg.Warnings)-1]
 		}
-		m.clampSelection()
+		m = m.clampSelection()
+		// Schedule loading-screen dismissal 2 s after the first successful poll.
+		if !m.startupDone && msg.Err == nil {
+			return m, tea.Tick(2*time.Second, func(_ time.Time) tea.Msg { return startupReadyMsg{} })
+		}
 
 	case LogEvent:
 		m.logs[m.logHead] = msg.Message
 		m.logHead = (m.logHead + 1) % len(m.logs)
 		return m, nil
 
+	case activityFeedMsg:
+		return m.handleActivityFeedMsg(msg)
+
 	case mergeLogReloadMsg:
 		if m.logViewerOpen && m.mergeLogTailing {
 			// Re-read and only auto-scroll if the user is already at the bottom.
 			atBottom := m.logViewerScroll == 0
-			m.reloadMergeLog()
+			m = m.reloadMergeLog()
 			if atBottom {
 				m.logViewerScroll = 0
 			}
 			return m, mergeLogReloadTick()
+		}
+		return m, nil
+
+	case startupReadyMsg:
+		m.startupDone = true
+		return m, nil
+
+	case loadingPunTickMsg:
+		if !m.startupDone {
+			m.loadingPunIdx = (m.loadingPunIdx + 1) % len(loadingPuns)
+			return m, loadingPunTick()
 		}
 		return m, nil
 
@@ -333,21 +445,352 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleRetryMerge sends a retry-merge command for the selected item if applicable.
-func (m *Model) handleRetryMerge() tea.Cmd {
+func (m Model) handleRetryMerge() (Model, tea.Cmd) {
 	s := m.selectedState()
 	if s == nil || s.CurrentStatus != mergeFixStatus || s.PR == nil {
-		return nil
+		return m, nil
 	}
 	if m.commandCh == nil {
-		return nil
+		return m, nil
 	}
-
 	m.commandCh <- poller.Command{
 		Action: "retry-merge",
 		PRNum:  s.PR.GetNumber(),
 	}
 	m.actionFeedback = fmt.Sprintf("Retry merge resolution queued for PR#%d", s.PR.GetNumber())
-	return tea.Tick(tuiCopyFeedbackDuration, func(_ time.Time) tea.Msg { return clearActionMsg{} })
+	return m, tea.Tick(tuiCopyFeedbackDuration, func(_ time.Time) tea.Msg { return clearActionMsg{} })
+}
+
+// handleTakeover sends a takeover command for the selected item.
+func (m Model) handleTakeover() (Model, tea.Cmd) {
+	s := m.selectedState()
+	if s == nil || m.commandCh == nil {
+		return m, nil
+	}
+	m.commandCh <- poller.Command{
+		Action:   "takeover",
+		IssueNum: s.Issue.GetNumber(),
+	}
+	m.actionFeedback = fmt.Sprintf("Manual takeover requested for #%d", s.Issue.GetNumber())
+	return m, tea.Tick(tuiCopyFeedbackDuration, func(_ time.Time) tea.Msg { return clearActionMsg{} })
+}
+
+// handleForceRerunCI sends a rerun-ci command for the selected item's PR.
+func (m Model) handleForceRerunCI() (Model, tea.Cmd) {
+	s := m.selectedState()
+	if s == nil || s.PR == nil || m.commandCh == nil {
+		return m, nil
+	}
+	m.commandCh <- poller.Command{
+		Action: "rerun-ci",
+		PRNum:  s.PR.GetNumber(),
+	}
+	m.actionFeedback = fmt.Sprintf("CI re-run requested for PR#%d", s.PR.GetNumber())
+	return m, tea.Tick(tuiCopyFeedbackDuration, func(_ time.Time) tea.Msg { return clearActionMsg{} })
+}
+
+// handlePriority sends a priority adjustment for the selected queue item.
+func (m Model) handlePriority(delta int) (Model, tea.Cmd) {
+	if m.selectedCol != 0 { // only works on queue column
+		return m, nil
+	}
+	s := m.selectedState()
+	if s == nil || m.commandCh == nil {
+		return m, nil
+	}
+	action := "priority-up"
+	label := "increased"
+	if delta < 0 {
+		action = "priority-down"
+		label = "decreased"
+	}
+	m.commandCh <- poller.Command{
+		Action:   action,
+		IssueNum: s.Issue.GetNumber(),
+	}
+	m.actionFeedback = fmt.Sprintf("Priority %s for #%d", label, s.Issue.GetNumber())
+	return m, tea.Tick(tuiCopyFeedbackDuration, func(_ time.Time) tea.Msg { return clearActionMsg{} })
+}
+
+// openDetailPane builds and opens the detail pane overlay for the selected item.
+func (m Model) openDetailPane() Model {
+	s := m.selectedState()
+	if s == nil {
+		return m
+	}
+
+	var lines []string
+	sep := strings.Repeat("─", 40)
+
+	lines = append(lines, fmt.Sprintf("  Issue #%d: %s", s.Issue.GetNumber(), s.Issue.GetTitle()))
+	lines = append(lines, sep)
+	lines = append(lines, fmt.Sprintf("  URL:      %s", s.Issue.GetHTMLURL()))
+	lines = append(lines, fmt.Sprintf("  Status:   %s", s.Status))
+	lines = append(lines, fmt.Sprintf("  Created:  %s", ghclient.TimeAgo(s.Issue.GetCreatedAt().Time)))
+
+	// Pipeline progress bar.
+	lines = append(lines, "")
+	lines = append(lines, "  Pipeline Progress")
+	lines = append(lines, sep)
+	lines = append(lines, renderPipelineBar(s))
+
+	if s.PR != nil {
+		lines = append(lines, "")
+		lines = append(lines, fmt.Sprintf("  PR #%d", s.PR.GetNumber()))
+		lines = append(lines, sep)
+		lines = append(lines, fmt.Sprintf("  URL:       %s", s.PR.GetHTMLURL()))
+		lines = append(lines, fmt.Sprintf("  Head SHA:  %s", s.PR.GetHead().GetSHA()))
+		lines = append(lines, fmt.Sprintf("  Mergeable: %s", s.PR.GetMergeableState()))
+		lines = append(lines, fmt.Sprintf("  Draft:     %v", s.PR.GetDraft()))
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, "  Orchestrator Status")
+	lines = append(lines, sep)
+	if s.CurrentStatus != "" {
+		lines = append(lines, fmt.Sprintf("  Phase:       %s", s.CurrentStatus))
+	}
+	if s.NextAction != "" {
+		next := s.NextAction
+		if !s.NextActionAt.IsZero() {
+			until := time.Until(s.NextActionAt)
+			if until <= 0 {
+				next += " now"
+			} else {
+				next += " in " + FormatCountdown(until)
+			}
+		}
+		lines = append(lines, fmt.Sprintf("  Next:        %s", next))
+	}
+	if s.RefinementMax > 0 {
+		lines = append(lines, fmt.Sprintf("  Refinement:  %d / %d", s.RefinementCount, s.RefinementMax))
+	}
+	if s.AgentStatus != "" {
+		lines = append(lines, fmt.Sprintf("  Agent:       %s", s.AgentStatus))
+	}
+	if s.MergeLogPath != "" {
+		lines = append(lines, fmt.Sprintf("  Merge log:   %s", s.MergeLogPath))
+	}
+
+	// Show issue body if available.
+	body := strings.TrimSpace(s.Issue.GetBody())
+	if body != "" {
+		lines = append(lines, "")
+		lines = append(lines, "  Issue Body")
+		lines = append(lines, sep)
+		for _, bl := range strings.Split(body, "\n") {
+			lines = append(lines, "  "+bl)
+		}
+	}
+
+	m.detailPaneLines = lines
+	m.detailPaneScroll = 0 // start at top
+
+	m.detailPaneOpen = true
+	return m
+}
+
+// renderPipelineBar renders a single line showing all pipeline stages with
+// ✓ done  ● active  ○ pending  ✗ failed indicators based on CurrentStatus.
+func renderPipelineBar(s *poller.State) string {
+	type stage struct {
+		name     string
+		keywords []string // any match → this stage is active
+	}
+
+	doneStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColorSuccess))
+	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00cfff")).Bold(true)
+	failStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColorFailure))
+	pendingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	arrowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	switch s.Status {
+	case "queue":
+		// Single-step — just show where it sits.
+		bar := activeStyle.Render("● Queued") + arrowStyle.Render(" → ") +
+			pendingStyle.Render("○ Coding") + arrowStyle.Render(" → ") +
+			pendingStyle.Render("○ Review") + arrowStyle.Render(" → ") +
+			pendingStyle.Render("○ Merge")
+		return "  " + bar
+
+	case "coding":
+		bar := doneStyle.Render("✓ Queued") + arrowStyle.Render(" → ") +
+			activeStyle.Render("● Coding") + arrowStyle.Render(" → ") +
+			pendingStyle.Render("○ Review") + arrowStyle.Render(" → ") +
+			pendingStyle.Render("○ Merge")
+		return "  " + bar
+	}
+
+	// Review pipeline stages in order.
+	stages := []stage{
+		{"Branch Sync", []string{"conflict", "branch", "resolv", "merge conflict", "Merge resolved"}},
+		{"CI Approval", []string{"approval", "Approving", "action_required", "Waiting for manual"}},
+		{"Deploy Gates", []string{"deployment", "deploy"}},
+		{"CI Checks", []string{"CI running", "waiting for all checks"}},
+		{"Refinement", []string{"Refinement", "refinement"}},
+		{"CI Fix", []string{"CI-fix", "ci-fix"}},
+		{"Merge", []string{"merging", "merged", "All checks passed"}},
+	}
+
+	cs := strings.ToLower(s.CurrentStatus)
+
+	// Find the current active stage index.
+	current := -1
+	for i, st := range stages {
+		for _, kw := range st.keywords {
+			if strings.Contains(cs, strings.ToLower(kw)) {
+				current = i
+				break
+			}
+		}
+		if current >= 0 {
+			break
+		}
+	}
+
+	// If status is failed/success and we couldn't match, infer from AgentStatus.
+	if current < 0 {
+		switch s.AgentStatus {
+		case "success":
+			current = len(stages) // all done
+		default:
+			current = 0 // default to first review stage
+		}
+	}
+
+	isFailed := s.AgentStatus == "failed"
+
+	var parts []string
+	for i, st := range stages {
+		var token string
+		switch {
+		case i < current:
+			token = doneStyle.Render("✓ " + st.name)
+		case i == current && isFailed:
+			token = failStyle.Render("✗ " + st.name)
+		case i == current:
+			token = activeStyle.Render("● " + st.name)
+		default:
+			token = pendingStyle.Render("○ " + st.name)
+		}
+		parts = append(parts, token)
+	}
+
+	arrow := arrowStyle.Render(" → ")
+	return "  " + strings.Join(parts, arrow)
+}
+
+// openActivityFeed starts fetching the timeline for the selected item.
+func (m Model) openActivityFeed() (tea.Model, tea.Cmd) {
+	s := m.selectedState()
+	if s == nil || m.gh == nil {
+		return m, nil
+	}
+	issueNum := s.Issue.GetNumber()
+	gh := m.gh
+	m.activityFeedOpen = true
+	m.activityFeedLines = []string{"  Loading timeline..."}
+	m.activityFeedScroll = 0
+	return m, func() tea.Msg {
+		entries, err := gh.FetchTimeline(context.Background(), issueNum)
+		return activityFeedMsg{entries: entries, err: err}
+	}
+}
+
+// handleActivityFeedMsg processes the timeline data and populates the overlay.
+func (m Model) handleActivityFeedMsg(msg activityFeedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.activityFeedLines = []string{fmt.Sprintf("  Error: %v", msg.err)}
+		return m, nil
+	}
+	var lines []string
+	lines = append(lines, fmt.Sprintf("  %d events", len(msg.entries)))
+	lines = append(lines, strings.Repeat("─", 60))
+	for _, e := range msg.entries {
+		ts := e.Time.Format("2006-01-02 15:04:05")
+		actor := e.Actor
+		if actor == "" {
+			actor = "system"
+		}
+		line := fmt.Sprintf("  %s  %-15s  %s", ts, actor, e.Event)
+		if e.Detail != "" {
+			line += "  " + e.Detail
+		}
+		lines = append(lines, line)
+	}
+	m.activityFeedLines = lines
+	m.activityFeedScroll = 0 // show from top
+	return m, nil
+}
+
+// overlayLines returns the lines slice for the given overlay type.
+func (m Model) overlayLines(kind string) []string {
+	if kind == "detail" {
+		return m.detailPaneLines
+	}
+	return m.activityFeedLines
+}
+
+// overlayScroll returns the scroll offset for the given overlay.
+func (m Model) overlayScroll(kind string) int {
+	if kind == "detail" {
+		return m.detailPaneScroll
+	}
+	return m.activityFeedScroll
+}
+
+// updateOverlayScroll handles key input for scrollable overlay panes (detail, activity).
+func (m Model) updateOverlayScroll(msg tea.KeyMsg, kind string) (tea.Model, tea.Cmd) {
+	lines := m.overlayLines(kind)
+	scroll := m.overlayScroll(kind)
+	viewHeight := m.logViewerHeight()
+	maxScroll := max(len(lines)-viewHeight, 0)
+
+	switch msg.String() {
+	case "esc", "q", "enter":
+		if kind == "detail" {
+			m.detailPaneOpen = false
+			m.detailPaneLines = nil
+			m.detailPaneScroll = 0
+		} else {
+			m.activityFeedOpen = false
+			m.activityFeedLines = nil
+			m.activityFeedScroll = 0
+		}
+		return m, nil
+	case "up", "k":
+		if scroll > 0 {
+			scroll--
+		}
+	case "down", "j":
+		if scroll < maxScroll {
+			scroll++
+		}
+	case "pgup", "ctrl+u":
+		scroll = max(scroll-viewHeight/2, 0)
+	case "pgdown", "ctrl+d":
+		scroll = min(scroll+viewHeight/2, maxScroll)
+	case "home", "g":
+		scroll = 0
+	case "end", "G":
+		scroll = maxScroll
+	case "c":
+		var sb strings.Builder
+		for i, line := range lines {
+			sb.WriteString(line)
+			if i < len(lines)-1 {
+				sb.WriteString("\n")
+			}
+		}
+		_ = clipboard.WriteAll(sb.String())
+		m.logsCopied = true
+	}
+	if kind == "detail" {
+		m.detailPaneScroll = scroll
+	} else {
+		m.activityFeedScroll = scroll
+	}
+	return m, nil
 }
 
 // View renders the full dashboard.
@@ -356,8 +799,18 @@ func (m Model) View() string {
 		return "Initializing..."
 	}
 
+	if !m.startupDone {
+		return m.renderLoadingScreen()
+	}
+
 	if m.logViewerOpen {
 		return m.renderLogViewer()
+	}
+	if m.detailPaneOpen {
+		return m.renderOverlay("DETAIL", m.detailPaneLines, m.detailPaneScroll)
+	}
+	if m.activityFeedOpen {
+		return m.renderOverlay("ACTIVITY TIMELINE", m.activityFeedLines, m.activityFeedScroll)
 	}
 
 	// Roughly tuiChromeRows + (tuiLogBoxHeight + tuiBorderRows) total reserved lines.
@@ -388,7 +841,7 @@ func (m Model) View() string {
 	logContent := m.renderLogs(tuiLogBoxHeight)
 	logBox := logBoxStyle.Width(logBoxWidth).Height(tuiLogBoxHeight).Render(logContent)
 
-	copyText := dimItemStyle.Render("[c] copy  [r] retry merge  [v] merge log  [L] all logs  [arrows/hjkl] navigate")
+	copyText := dimItemStyle.Render("[enter] detail  [a] timeline  [t] takeover  [f] rerun CI  [r] retry merge  [+/-] priority  [v/L] logs")
 	if m.logsCopied {
 		copyText = lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColorSuccess)).Render("[Copied!]")
 	} else if m.actionFeedback != "" {
@@ -413,6 +866,77 @@ func (m Model) View() string {
 		"",
 		statusLine,
 	)
+}
+
+// renderLoadingScreen draws the full-screen startup splash shown before the
+// first poll completes.  It has a big title, animated progress bar, and
+// rotating punny loading message.
+func (m Model) renderLoadingScreen() string {
+	w := max(m.width, tuiColMinWidth)
+	h := max(m.height, tuiColMinHeight)
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00cfff")).
+		Bold(true).
+		Width(w).
+		Align(lipgloss.Center)
+
+	subStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Width(w).
+		Align(lipgloss.Center)
+
+	punStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#ffcc00")).
+		Bold(true).
+		Width(w).
+		Align(lipgloss.Center)
+
+	spinStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(tuiColorSpinner)).
+		Width(w).
+		Align(lipgloss.Center)
+
+	ascii := []string{
+		`  ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗`,
+		`██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝`,
+		`██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   `,
+		`██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   `,
+		`╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   `,
+		` ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   `,
+		` █████╗ ██╗   ██╗████████╗ ██████╗ ██████╗ ███████╗██╗   ██╗`,
+		`██╔══██╗██║   ██║╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝██║   ██║`,
+		`███████║██║   ██║   ██║   ██║   ██║██║  ██║█████╗  ██║   ██║`,
+		`██╔══██║██║   ██║   ██║   ██║   ██║██║  ██║██╔══╝  ╚██╗ ██╔╝`,
+		`██║  ██║╚██████╔╝   ██║   ╚██████╔╝██████╔╝███████╗ ╚████╔╝ `,
+		`╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝ ╚═════╝ ╚══════╝  ╚═══╝  `,
+	}
+
+	// Animated bar using the spinner frame.
+	barWidth := min(50, w-4)
+	frame := m.spinner.View()
+	barChars := strings.Repeat("━", barWidth)
+	bar := spinStyle.Render(frame + " " + barChars + " " + frame)
+
+	pun := loadingPuns[m.loadingPunIdx%len(loadingPuns)]
+
+	// Build vertical layout centred in the terminal.
+	topPad := max((h-len(ascii)-8)/2, 0)
+	var sb strings.Builder
+	for range topPad {
+		sb.WriteString("\n")
+	}
+	for _, line := range ascii {
+		sb.WriteString(titleStyle.Render(line))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+	sb.WriteString(bar)
+	sb.WriteString("\n\n")
+	sb.WriteString(punStyle.Render(pun))
+	sb.WriteString("\n\n")
+	sb.WriteString(subStyle.Render(fmt.Sprintf("Connecting to %s/%s  •  Press q to quit", m.owner, m.repo)))
+	return sb.String()
 }
 
 func colorLogLine(line string) string {
@@ -666,6 +1190,22 @@ func (m Model) RenderStatusSubLine(s *poller.State, colWidth int) string {
 		parts = append(parts, current)
 	}
 
+	// CI progress bar: only shown when we have run data.
+	if s.CITotal > 0 {
+		const barWidth = 10
+		filled := 0
+		if s.CITotal > 0 {
+			filled = (s.CICompleted * barWidth) / s.CITotal
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+		barColor := tuiColorSuccess
+		if s.CIFailed > 0 {
+			barColor = tuiColorFailure
+		}
+		barStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(barColor)).Render(bar)
+		parts = append(parts, fmt.Sprintf("[%s] %d/%d checks", barStyled, s.CICompleted, s.CITotal))
+	}
+
 	if agentIcon != "" {
 		parts = append(parts, "copilot"+agentIcon)
 	}
@@ -704,11 +1244,11 @@ func FormatCountdown(d time.Duration) string {
 const logViewerMaxLines = 500 // max lines to load from the log file
 
 // openLogFile reads the given file and opens the fullscreen viewer.
-func (m *Model) openLogFile(path string) {
+func (m Model) openLogFile(path string) Model {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		m.actionFeedback = fmt.Sprintf("Cannot open log: %v", err)
-		return
+		return m
 	}
 	lines := strings.Split(string(data), "\n")
 	// Keep only the last logViewerMaxLines lines.
@@ -719,20 +1259,11 @@ func (m *Model) openLogFile(path string) {
 	m.logViewerScroll = 0 // 0 = viewing the bottom (most recent)
 	m.logViewerOpen = true
 	m.logViewerTitle = path
-}
-
-// openMergeLog opens the merge resolution log for the currently selected item (static, no tail).
-func (m *Model) openMergeLog() {
-	s := m.selectedState()
-	if s == nil || s.MergeLogPath == "" {
-		m.actionFeedback = "No merge log available for selected item"
-		return
-	}
-	m.openLogFile(s.MergeLogPath)
+	return m
 }
 
 // openMergeLogCmd starts the live-tail merge log viewer for the selected item.
-func (m *Model) openMergeLogCmd() (tea.Model, tea.Cmd) {
+func (m Model) openMergeLogCmd() (tea.Model, tea.Cmd) {
 	s := m.selectedState()
 	if s == nil || s.MergeLogPath == "" {
 		m.actionFeedback = "No merge log available for selected item"
@@ -740,24 +1271,25 @@ func (m *Model) openMergeLogCmd() (tea.Model, tea.Cmd) {
 	}
 	m.mergeLogFilePath = s.MergeLogPath
 	m.mergeLogTailing = true
-	m.openLogFile(s.MergeLogPath)
+	m = m.openLogFile(s.MergeLogPath)
 	return m, mergeLogReloadTick()
 }
 
 // reloadMergeLog re-reads the merge log file in place (called by the tail ticker).
-func (m *Model) reloadMergeLog() {
+func (m Model) reloadMergeLog() Model {
 	if m.mergeLogFilePath == "" {
-		return
+		return m
 	}
 	data, err := os.ReadFile(m.mergeLogFilePath)
 	if err != nil {
-		return // file may not exist yet — silently skip
+		return m // file may not exist yet — silently skip
 	}
 	lines := strings.Split(string(data), "\n")
 	if len(lines) > logViewerMaxLines {
 		lines = lines[len(lines)-logViewerMaxLines:]
 	}
 	m.logViewerLines = lines
+	return m
 }
 
 // updateLogViewer handles key input while the log viewer overlay is open.
@@ -863,6 +1395,51 @@ func (m Model) renderLogViewer() string {
 		sb.WriteString("\n")
 	}
 	// Pad remaining lines.
+	for i := len(visible); i < viewH; i++ {
+		sb.WriteString("\n")
+	}
+
+	posInfo := fmt.Sprintf("Line %d-%d of %d", startIdx+1, endIdx, total)
+	sb.WriteString(statusBarStyle.Render(posInfo))
+
+	return sb.String()
+}
+
+// renderOverlay draws a generic fullscreen overlay with a title, scrollable lines, and controls.
+func (m Model) renderOverlay(title string, lines []string, scroll int) string {
+	viewH := m.logViewerHeight()
+	total := len(lines)
+
+	endIdx := min(scroll+viewH, total)
+	startIdx := scroll
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	visible := lines[startIdx:endIdx]
+
+	var sb strings.Builder
+
+	scrollPos := ""
+	if total > viewH {
+		scrollPos = fmt.Sprintf("  [ %d/%d ]", startIdx+1, total)
+	}
+	headerText := fmt.Sprintf(" %s%s  (scroll: up/down/pgup/pgdn  home/end: g/G  copy: c  close: esc/q) ", title, scrollPos)
+	if m.logsCopied {
+		headerText = fmt.Sprintf(" %s%s  [Copied!] ", title, scrollPos)
+	}
+	sb.WriteString(titleStyle.Width(m.width).Render(headerText))
+	sb.WriteString("\n")
+
+	innerW := max(m.width-2, tuiMinInnerWidth)
+	for _, line := range visible {
+		runes := []rune(line)
+		if len(runes) > innerW {
+			line = string(runes[:innerW-1]) + "…"
+		}
+		sb.WriteString(detailValueStyle.Render(line))
+		sb.WriteString("\n")
+	}
 	for i := len(visible); i < viewH; i++ {
 		sb.WriteString("\n")
 	}

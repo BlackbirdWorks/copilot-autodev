@@ -265,13 +265,35 @@ func (t *PRTask) CheckGates(ctx context.Context) (bool, error) {
 }
 
 func (t *PRTask) WaitForCI(ctx context.Context) (bool, error) {
-	anyActive, err := t.P.gh.AnyWorkflowRunActive(ctx, t.Sha)
+	// Fetch runs once — reuse for both the active-check and progress counts.
+	runs, err := t.P.gh.LatestWorkflowRun(ctx, t.Sha)
 	if err != nil {
 		return false, err
 	}
+
+	anyActive := false
+	ciCompleted, ciTotal, ciPassed, ciFailed := 0, 0, 0, 0
+	for _, r := range runs {
+		ciTotal++
+		status := r.GetStatus()
+		if status == "in_progress" || status == "queued" || status == "requested" {
+			anyActive = true
+		}
+		if status == "completed" {
+			ciCompleted++
+			c := r.GetConclusion()
+			if c == "success" || c == "skipped" || c == "neutral" {
+				ciPassed++
+			} else if c != "" {
+				ciFailed++
+			}
+		}
+	}
+
 	if !anyActive && len(t.ApprovedRuns) == 0 {
 		return false, nil
 	}
+
 	sent, err := t.P.gh.CountRefinementPromptsSent(ctx, t.PR.GetNumber())
 	if err != nil {
 		return false, err
@@ -286,6 +308,10 @@ func (t *PRTask) WaitForCI(ctx context.Context) (bool, error) {
 		Next:        nextAction,
 		PR:          t.PR,
 		AgentStatus: "pending",
+		CICompleted: ciCompleted,
+		CITotal:     ciTotal,
+		CIPassed:    ciPassed,
+		CIFailed:    ciFailed,
 	})
 	return true, nil
 }

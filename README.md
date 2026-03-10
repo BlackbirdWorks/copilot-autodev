@@ -6,6 +6,8 @@ feeds them sequentially to the native GitHub Copilot coding agent up to a
 configurable concurrency limit, and babysits the resulting Pull Requests
 through CI feedback and merging.
 
+![Copilot Orchestrator TUI Dashboard](docs/screenshot.png)
+
 ---
 
 ## Features

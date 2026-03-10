@@ -33,6 +33,10 @@ type IssueDisplayInfo struct {
 	RefinementMax   int
 	AgentStatus     string // "pending" | "success" | "failed"
 	MergeLogPath    string // path to the per-PR merge resolution log (if any)
+	CICompleted     int    // number of completed CI workflow runs
+	CITotal         int    // total number of CI workflow runs
+	CIPassed        int    // number of successful CI runs (conclusion=success/skipped/neutral)
+	CIFailed        int    // number of failed CI runs
 }
 
 // State is the poller's high-level understanding of a single issue.
@@ -48,6 +52,10 @@ type State struct {
 	RefinementMax   int
 	AgentStatus     string // "pending" | "success" | "failed"
 	MergeLogPath    string // path to the per-PR merge resolution log (if any)
+	CICompleted     int    // number of completed CI workflow runs
+	CITotal         int    // total number of CI workflow runs
+	CIPassed        int    // number of successful CI runs
+	CIFailed        int    // number of failed CI runs
 }
 
 // Event is sent on the Events channel after every poll tick.
@@ -62,8 +70,9 @@ type Event struct {
 
 // Command is a request sent from the TUI (or other callers) to the Poller.
 type Command struct {
-	Action string // "retry-merge"
-	PRNum  int    // the PR number to act on
+	Action   string // "retry-merge" | "takeover" | "rerun-ci" | "priority-up" | "priority-down"
+	PRNum    int    // the PR number to act on (used by retry-merge, rerun-ci)
+	IssueNum int    // the issue number to act on (used by takeover, priority-up/down)
 }
 
 // Poller orchestrates the Copilot workflow state machine.
@@ -74,7 +83,8 @@ type Poller struct {
 	Events         chan Event
 	Commands       chan Command
 	approveRetries map[int64]int
-	mu             sync.Mutex // protects approveRetries across concurrent processOne calls
+	priorities     map[int]int // issue number → priority offset (higher = promoted first)
+	mu             sync.Mutex  // protects approveRetries and priorities across concurrent calls
 }
 
 // New creates a Poller ready to Start.
@@ -86,6 +96,7 @@ func New(cfg *config.Config, gh *ghclient.Client, token string) *Poller {
 		Events:         make(chan Event, 1),
 		Commands:       make(chan Command, 10),
 		approveRetries: make(map[int64]int),
+		priorities:     make(map[int]int),
 	}
 }
 
@@ -124,6 +135,14 @@ func (p *Poller) handleCommand(ctx context.Context, cmd Command) {
 	switch cmd.Action {
 	case "retry-merge":
 		p.retryMergeResolution(ctx, cmd.PRNum)
+	case "takeover":
+		p.takeoverIssue(ctx, cmd.IssueNum)
+	case "rerun-ci":
+		p.rerunCI(ctx, cmd.PRNum)
+	case "priority-up":
+		p.adjustPriority(ctx, cmd.IssueNum, 1)
+	case "priority-down":
+		p.adjustPriority(ctx, cmd.IssueNum, -1)
 	default:
 		logger.Load(ctx).WarnContext(ctx, "unknown command", slog.String("action", cmd.Action))
 	}
@@ -148,6 +167,54 @@ func (p *Poller) retryMergeResolution(ctx context.Context, prNum int) {
 	if err := p.gh.DeleteCommentContaining(ctx, prNum, ghclient.LocalResolutionFailedMarker); err != nil {
 		logger.Load(ctx).WarnContext(ctx, "failed to delete merge resolution failure marker", slog.Int("pr", prNum), slog.Any("err", err))
 	}
+}
+
+// takeoverIssue adds the manual-takeover label and removes all workflow labels
+// so the orchestrator stops managing the issue.
+func (p *Poller) takeoverIssue(ctx context.Context, issueNum int) {
+	logger.Load(ctx).InfoContext(ctx, "manual takeover requested", slog.Int("issue", issueNum))
+	if err := p.gh.AddLabel(ctx, issueNum, p.cfg.LabelTakeover); err != nil {
+		logger.Load(ctx).WarnContext(ctx, "failed to add takeover label", slog.Int("issue", issueNum), slog.Any("err", err))
+		return
+	}
+	for _, lbl := range []string{p.cfg.LabelQueue, p.cfg.LabelCoding, p.cfg.LabelReview} {
+		_ = p.gh.RemoveLabel(ctx, issueNum, lbl)
+	}
+}
+
+// rerunCI looks up the PR's head SHA and re-runs all failed/completed workflow runs.
+func (p *Poller) rerunCI(ctx context.Context, prNum int) {
+	logger.Load(ctx).InfoContext(ctx, "force re-run CI requested", slog.Int("pr", prNum))
+	sha, err := p.gh.GetPRHeadSHA(ctx, prNum)
+	if err != nil {
+		logger.Load(ctx).WarnContext(ctx, "could not get PR head SHA for rerun", slog.Int("pr", prNum), slog.Any("err", err))
+		return
+	}
+	runs, err := p.gh.LatestWorkflowRun(ctx, sha)
+	if err != nil {
+		logger.Load(ctx).WarnContext(ctx, "could not list workflow runs for rerun", slog.Int("pr", prNum), slog.Any("err", err))
+		return
+	}
+	for _, r := range runs {
+		c := r.GetConclusion()
+		if c == "failure" || c == "timed_out" || c == "cancelled" || c == "action_required" {
+			if rerunErr := p.gh.RerunWorkflow(ctx, r.GetID()); rerunErr != nil {
+				logger.Load(ctx).WarnContext(ctx, "failed to rerun workflow", slog.Int64("run", r.GetID()), slog.Any("err", rerunErr))
+			}
+		}
+	}
+}
+
+// adjustPriority changes the priority offset for an issue in the queue.
+func (p *Poller) adjustPriority(ctx context.Context, issueNum, delta int) {
+	p.mu.Lock()
+	p.priorities[issueNum] += delta
+	newPri := p.priorities[issueNum]
+	if newPri == 0 {
+		delete(p.priorities, issueNum)
+	}
+	p.mu.Unlock()
+	logger.Load(ctx).InfoContext(ctx, "priority adjusted", slog.Int("issue", issueNum), slog.Int("priority", newPri))
 }
 
 // FetchAllIssues returns the queue, coding, and reviewing issue lists fetched
@@ -278,7 +345,7 @@ func (p *Poller) PromoteFromQueue(ctx context.Context, queue []*github.Issue) er
 		return nil
 	}
 
-	SortIssuesAsc(queue)
+	p.SortQueueByPriority(queue)
 
 	for i := 0; i < slots && i < len(queue); i++ {
 		issue := queue[i]
@@ -670,7 +737,7 @@ func (p *Poller) Snapshot(ctx context.Context, displayInfo map[int]*IssueDisplay
 	codingIssues, _ := p.gh.IssuesByLabel(ctx, p.cfg.LabelCoding)
 	reviewIssues, _ := p.gh.IssuesByLabel(ctx, p.cfg.LabelReview)
 
-	SortIssuesAsc(queueIssues)
+	p.SortQueueByPriority(queueIssues)
 	SortIssuesAsc(codingIssues)
 	SortIssuesAsc(reviewIssues)
 
@@ -690,6 +757,10 @@ func (p *Poller) Snapshot(ctx context.Context, displayInfo map[int]*IssueDisplay
 				s.RefinementMax = info.RefinementMax
 				s.AgentStatus = info.AgentStatus
 				s.MergeLogPath = info.MergeLogPath
+				s.CICompleted = info.CICompleted
+				s.CITotal = info.CITotal
+				s.CIPassed = info.CIPassed
+				s.CIFailed = info.CIFailed
 			}
 			states = append(states, s)
 		}
@@ -721,6 +792,22 @@ func DeduplicateIssueLists(queue, coding, reviewing []*github.Issue) ([]*github.
 		}
 	}
 	return deduped, reviewing
+}
+
+// SortQueueByPriority sorts issues by priority (highest first), then by issue
+// number ascending as a tiebreaker.
+func (p *Poller) SortQueueByPriority(issues []*github.Issue) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := 0; i < len(issues); i++ {
+		for j := i + 1; j < len(issues); j++ {
+			pi := p.priorities[issues[i].GetNumber()]
+			pj := p.priorities[issues[j].GetNumber()]
+			if pi < pj || (pi == pj && issues[i].GetNumber() > issues[j].GetNumber()) {
+				issues[i], issues[j] = issues[j], issues[i]
+			}
+		}
+	}
 }
 
 func SortIssuesAsc(issues []*github.Issue) {

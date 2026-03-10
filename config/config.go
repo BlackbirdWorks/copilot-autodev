@@ -152,6 +152,11 @@ type Config struct {
 	// LogMaxFiles is the maximum number of rotated log files to keep.
 	// Older files are deleted when the limit is exceeded.  Default: 3.
 	LogMaxFiles int `yaml:"log_max_files"`
+
+	// NotificationsEnabled controls whether desktop notifications are sent
+	// for key events (PR merged, agent timeout, manual fix needed).
+	// Default: true.
+	NotificationsEnabled bool `yaml:"notifications_enabled"`
 }
 
 // Load reads a YAML config file from path and returns a populated Config with
@@ -199,6 +204,7 @@ func DefaultConfig() *Config {
 		MaxCIFixRounds:                defaultMaxCIFixRounds,
 		LogMaxSizeMB:                  defaultLogMaxSizeMB,
 		LogMaxFiles:                   defaultLogMaxFiles,
+		NotificationsEnabled:          true,
 	}
 }
 

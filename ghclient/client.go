@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -119,18 +120,24 @@ const (
 )
 
 // Client wraps the GitHub SDK client with the settings from Config.
+type workflowRunCacheEntry struct {
+	runs      []*github.WorkflowRun
+	fetchedAt time.Time
+}
+
 type Client struct {
-	gh            *github.Client
-	owner         string
-	repo          string
-	labelQueue    string
-	labelCoding   string
-	labelReview   string
-	labelTakeover string
-	mergeMethod   string
-	mergeMsg      string
-	token         string // PAT used for Copilot API calls
-	transport     http.RoundTripper
+	gh               *github.Client
+	owner            string
+	repo             string
+	labelQueue       string
+	labelCoding      string
+	labelReview      string
+	labelTakeover    string
+	mergeMethod      string
+	mergeMsg         string
+	token            string // PAT used for Copilot API calls
+	transport        http.RoundTripper
+	workflowRunCache sync.Map // sha → workflowRunCacheEntry
 }
 
 // New creates a new Client authenticated with the provided PAT token.
@@ -642,6 +649,15 @@ func (c *Client) MergePR(ctx context.Context, pr *github.PullRequest) error {
 	return err
 }
 
+// GetPRHeadSHA fetches a PR by number and returns its head commit SHA.
+func (c *Client) GetPRHeadSHA(ctx context.Context, prNum int) (string, error) {
+	pr, _, err := c.gh.PullRequests.Get(ctx, c.owner, c.repo, prNum)
+	if err != nil {
+		return "", fmt.Errorf("get PR #%d: %w", prNum, err)
+	}
+	return pr.GetHead().GetSHA(), nil
+}
+
 // UpdatePRBranch updates the PR branch with latest changes from its base branch
 // using the GitHub native "Update branch" API.
 func (c *Client) UpdatePRBranch(ctx context.Context, prNum int) error {
@@ -665,7 +681,14 @@ func (c *Client) UpdatePRBranch(ctx context.Context, prNum int) error {
 }
 
 // LatestWorkflowRun returns all recent workflow runs for the given commit SHA.
+// Results are cached for 30 s to avoid redundant API calls within a single tick.
 func (c *Client) LatestWorkflowRun(ctx context.Context, sha string) ([]*github.WorkflowRun, error) {
+	const cacheTTL = 30 * time.Second
+	if v, ok := c.workflowRunCache.Load(sha); ok {
+		if e := v.(workflowRunCacheEntry); time.Since(e.fetchedAt) < cacheTTL {
+			return e.runs, nil
+		}
+	}
 	logger.Load(ctx).InfoContext(ctx, "Listing workflow runs", slog.String("sha", sha))
 	runs, _, err := c.gh.Actions.ListRepositoryWorkflowRuns(ctx, c.owner, c.repo, &github.ListWorkflowRunsOptions{
 		HeadSHA:     sha,
@@ -684,6 +707,10 @@ func (c *Client) LatestWorkflowRun(ctx context.Context, sha string) ([]*github.W
 			slog.String("conclusion", r.GetConclusion()),
 		)
 	}
+	c.workflowRunCache.Store(sha, workflowRunCacheEntry{
+		runs:      runs.WorkflowRuns,
+		fetchedAt: time.Now(),
+	})
 	return runs.WorkflowRuns, nil
 }
 
@@ -1601,4 +1628,112 @@ func SHAMarker(prefix, sha string) string {
 		short = short[:7]
 	}
 	return fmt.Sprintf("<!-- copilot-autocode:%s:%s -->", prefix, short)
+}
+
+// TimelineEntry represents a single event in an issue's activity feed.
+type TimelineEntry struct {
+	Time   time.Time
+	Actor  string
+	Event  string
+	Detail string
+}
+
+// FetchTimeline returns a chronological list of significant events for an issue,
+// combining label events and comments (with friendly marker detection).
+func (c *Client) FetchTimeline(ctx context.Context, issueNum int) ([]TimelineEntry, error) {
+	var entries []TimelineEntry
+
+	// 1. Fetch label events.
+	opts := &github.ListOptions{PerPage: perPageDefault}
+	for {
+		events, resp, err := c.gh.Issues.ListIssueEvents(ctx, c.owner, c.repo, issueNum, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list issue events (#%d): %w", issueNum, err)
+		}
+		for _, e := range events {
+			evt := e.GetEvent()
+			switch evt {
+			case "labeled", "unlabeled":
+				entries = append(entries, TimelineEntry{
+					Time:   e.GetCreatedAt().Time,
+					Actor:  e.GetActor().GetLogin(),
+					Event:  evt,
+					Detail: e.GetLabel().GetName(),
+				})
+			case "assigned", "unassigned":
+				entries = append(entries, TimelineEntry{
+					Time:   e.GetCreatedAt().Time,
+					Actor:  e.GetActor().GetLogin(),
+					Event:  evt,
+					Detail: e.GetAssignee().GetLogin(),
+				})
+			case "closed", "reopened":
+				entries = append(entries, TimelineEntry{
+					Time:  e.GetCreatedAt().Time,
+					Actor: e.GetActor().GetLogin(),
+					Event: evt,
+				})
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	// 2. Fetch comments and detect our markers for friendly labels.
+	cmOpts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: perPageDefault}}
+	for {
+		comments, resp, err := c.gh.Issues.ListComments(ctx, c.owner, c.repo, issueNum, cmOpts)
+		if err != nil {
+			return nil, fmt.Errorf("list comments (#%d): %w", issueNum, err)
+		}
+		for _, cm := range comments {
+			body := cm.GetBody()
+			entry := TimelineEntry{
+				Time:  cm.GetCreatedAt().Time,
+				Actor: cm.GetUser().GetLogin(),
+			}
+			switch {
+			case strings.Contains(body, RefinementCommentMarker):
+				entry.Event = "Refinement posted"
+			case strings.Contains(body, CIFixCommentMarker):
+				entry.Event = "CI fix requested"
+			case strings.Contains(body, MergeConflictCommentMarker):
+				entry.Event = "Merge conflict comment"
+			case strings.Contains(body, LocalResolutionFailedMarker):
+				entry.Event = "Local resolution failed"
+			case strings.Contains(body, LocalResolutionCommentMarker):
+				entry.Event = "Local resolution succeeded"
+			case strings.Contains(body, CopilotNudgeCommentMarker):
+				entry.Event = "Agent nudge"
+			case strings.Contains(body, AgentContinueCommentMarker):
+				entry.Event = "Agent continue"
+			default:
+				// Truncate long comments.
+				detail := body
+				if len(detail) > 80 {
+					detail = detail[:77] + "..."
+				}
+				entry.Event = "Comment"
+				entry.Detail = detail
+			}
+			entries = append(entries, entry)
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		cmOpts.Page = resp.NextPage
+	}
+
+	// Sort by time ascending.
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].Time.Before(entries[i].Time) {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	return entries, nil
 }
