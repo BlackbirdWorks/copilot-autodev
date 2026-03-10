@@ -5,8 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
-	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
+	"github.com/BlackbirdWorks/copilot-autodev/ghclient"
 )
 
 type fakeRoundTripper struct {

@@ -14,8 +14,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
-	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
-	"github.com/BlackbirdWorks/copilot-autocode/poller"
+	"github.com/BlackbirdWorks/copilot-autodev/ghclient"
+	"github.com/BlackbirdWorks/copilot-autodev/poller"
 )
 
 // PollEvent wraps a poller.Event for delivery into the Bubble Tea message bus.
@@ -196,7 +196,7 @@ func New(owner, repo string, interval int, commandCh chan<- poller.Command, gh *
 	return Model{
 		spinner:     sp,
 		logs:        make([]string, logHistorySize), // keep last N logs
-		logFilePath: "copilot-autocode.log",
+		logFilePath: "copilot-autodev.log",
 		owner:       owner,
 		repo:        repo,
 		interval:    interval,
@@ -532,7 +532,7 @@ func (m Model) openDetailPane() Model {
 	lines = append(lines, "")
 	lines = append(lines, "  Pipeline Progress")
 	lines = append(lines, sep)
-	lines = append(lines, renderPipelineBar(s))
+	lines = append(lines, RenderPipelineBar(s))
 
 	if s.PR != nil {
 		lines = append(lines, "")
@@ -578,7 +578,7 @@ func (m Model) openDetailPane() Model {
 		lines = append(lines, "")
 		lines = append(lines, "  Issue Body")
 		lines = append(lines, sep)
-		for _, bl := range strings.Split(body, "\n") {
+		for bl := range strings.SplitSeq(body, "\n") {
 			lines = append(lines, "  "+bl)
 		}
 	}
@@ -590,9 +590,9 @@ func (m Model) openDetailPane() Model {
 	return m
 }
 
-// renderPipelineBar renders a single line showing all pipeline stages with
+// RenderPipelineBar renders a single line showing all pipeline stages with
 // ✓ done  ● active  ○ pending  ✗ failed indicators based on CurrentStatus.
-func renderPipelineBar(s *poller.State) string {
+func RenderPipelineBar(s *poller.State) string {
 	type stage struct {
 		name     string
 		keywords []string // any match → this stage is active
@@ -626,7 +626,7 @@ func renderPipelineBar(s *poller.State) string {
 		{"Branch Sync", []string{"conflict", "branch", "resolv", "merge conflict", "Merge resolved"}},
 		{"CI Approval", []string{"approval", "Approving", "action_required", "Waiting for manual"}},
 		{"Deploy Gates", []string{"deployment", "deploy"}},
-		{"CI Checks", []string{"CI running", "waiting for all checks"}},
+		{"CI Checks", []string{"CI running", "waiting for all checks", "failed", "checks"}},
 		{"Refinement", []string{"Refinement", "refinement"}},
 		{"CI Fix", []string{"CI-fix", "ci-fix"}},
 		{"Merge", []string{"merging", "merged", "All checks passed"}},
@@ -634,9 +634,10 @@ func renderPipelineBar(s *poller.State) string {
 
 	cs := strings.ToLower(s.CurrentStatus)
 
-	// Find the current active stage index.
+	// Find the latest stage that matches (search backwards).
 	current := -1
-	for i, st := range stages {
+	for i := len(stages) - 1; i >= 0; i-- {
+		st := stages[i]
 		for _, kw := range st.keywords {
 			if strings.Contains(cs, strings.ToLower(kw)) {
 				current = i
@@ -841,7 +842,9 @@ func (m Model) View() string {
 	logContent := m.renderLogs(tuiLogBoxHeight)
 	logBox := logBoxStyle.Width(logBoxWidth).Height(tuiLogBoxHeight).Render(logContent)
 
-	copyText := dimItemStyle.Render("[enter] detail  [a] timeline  [t] takeover  [f] rerun CI  [r] retry merge  [+/-] priority  [v/L] logs")
+	copyText := dimItemStyle.Render(
+		"[enter] detail  [a] timeline  [t] takeover  [f] rerun CI  [r] retry merge  [+/-] priority  [v/L] logs",
+	)
 	if m.logsCopied {
 		copyText = lipgloss.NewStyle().Foreground(lipgloss.Color(tuiColorSuccess)).Render("[Copied!]")
 	} else if m.actionFeedback != "" {
@@ -1369,7 +1372,8 @@ func (m Model) renderLogViewer() string {
 		scrollPos = fmt.Sprintf("  [ %d/%d ]", startIdx+1, total)
 	}
 
-	headerText := fmt.Sprintf(" LOG VIEWER%s — %s%s  (scroll: up/down/pgup/pgdn  home/end: g/G  copy: c  close: L/v/esc/q) ",
+	headerText := fmt.Sprintf(
+		" LOG VIEWER%s — %s%s  (scroll: up/down/pgup/pgdn  home/end: g/G  copy: c  close: L/v/esc/q) ",
 		map[bool]string{true: " [LIVE]", false: ""}[m.mergeLogTailing],
 		m.logViewerTitle,
 		scrollPos,
@@ -1411,10 +1415,7 @@ func (m Model) renderOverlay(title string, lines []string, scroll int) string {
 	total := len(lines)
 
 	endIdx := min(scroll+viewH, total)
-	startIdx := scroll
-	if startIdx < 0 {
-		startIdx = 0
-	}
+	startIdx := max(scroll, 0)
 
 	visible := lines[startIdx:endIdx]
 
@@ -1424,7 +1425,11 @@ func (m Model) renderOverlay(title string, lines []string, scroll int) string {
 	if total > viewH {
 		scrollPos = fmt.Sprintf("  [ %d/%d ]", startIdx+1, total)
 	}
-	headerText := fmt.Sprintf(" %s%s  (scroll: up/down/pgup/pgdn  home/end: g/G  copy: c  close: esc/q) ", title, scrollPos)
+	headerText := fmt.Sprintf(
+		" %s%s  (scroll: up/down/pgup/pgdn  home/end: g/G  copy: c  close: esc/q) ",
+		title,
+		scrollPos,
+	)
 	if m.logsCopied {
 		headerText = fmt.Sprintf(" %s%s  [Copied!] ", title, scrollPos)
 	}

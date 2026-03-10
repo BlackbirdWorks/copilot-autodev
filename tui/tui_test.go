@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/BlackbirdWorks/copilot-autocode/poller"
-	"github.com/BlackbirdWorks/copilot-autocode/tui"
+	"github.com/BlackbirdWorks/copilot-autodev/poller"
+	"github.com/BlackbirdWorks/copilot-autodev/tui"
 )
 
 // ansiRe matches ANSI CSI escape sequences so tests can compare plain text.

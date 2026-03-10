@@ -1,4 +1,4 @@
-# copilot-autocode — Copilot Orchestrator TUI
+# copilot-autodev — Copilot Orchestrator TUI
 
 A sophisticated, local Go Terminal UI (TUI) application that acts as a
 headless **Copilot Orchestrator**.  It manages a large queue of GitHub issues,
@@ -55,9 +55,9 @@ The PAT must have permission to:
 ## Installation
 
 ```bash
-git clone https://github.com/BlackbirdWorks/copilot-autocode.git
-cd copilot-autocode
-go build -o copilot-autocode .
+git clone https://github.com/BlackbirdWorks/copilot-autodev.git
+cd copilot-autodev
+go build -o copilot-autodev .
 ```
 
 ---
@@ -83,7 +83,7 @@ go build -o copilot-autocode .
 
 ```bash
 export GITHUB_TOKEN="ghp_…"
-./copilot-autocode --config config.yaml
+./copilot-autodev --config config.yaml
 ```
 
 Press **q** or **Ctrl-C** to quit gracefully.

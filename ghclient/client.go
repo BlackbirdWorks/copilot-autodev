@@ -20,8 +20,8 @@ import (
 	"github.com/google/go-github/v68/github"
 	"golang.org/x/oauth2"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
-	"github.com/BlackbirdWorks/copilot-autocode/pkgs/logger"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
+	"github.com/BlackbirdWorks/copilot-autodev/pkgs/logger"
 )
 
 const (
@@ -29,67 +29,67 @@ const (
 	// refinement prompt.  The orchestrator counts PR reviews containing this
 	// marker to determine many refinement rounds have already been sent,
 	// which means the count survives process restarts.
-	RefinementCommentMarker = "<!-- copilot-autocode:refinement -->"
+	RefinementCommentMarker = "<!-- copilot-autodev:refinement -->"
 
 	// MergeConflictCommentMarker is an invisible HTML comment embedded in
 	// every merge-conflict @copilot prompt.  Counting these comments on a PR
 	// tells the orchestrator how many @copilot attempts have been made so far,
 	// which means the count survives process restarts.
-	MergeConflictCommentMarker = "<!-- copilot-autocode:merge-conflict -->"
+	MergeConflictCommentMarker = "<!-- copilot-autodev:merge-conflict -->"
 
 	// CopilotNudgeCommentMarker is an invisible HTML comment embedded in every
 	// nudge comment posted when the Copilot coding agent has not started
 	// within the configured timeout.  Counting these comments tells the
 	// orchestrator how many re-trigger attempts have been made for the current
 	// coding cycle so that it can enforce CopilotInvokeMaxRetries.
-	CopilotNudgeCommentMarker = "<!-- copilot-autocode:nudge -->"
+	CopilotNudgeCommentMarker = "<!-- copilot-autodev:nudge -->"
 
 	// AgentContinueCommentMarker is an invisible HTML comment embedded in
 	// every "@copilot continue" comment posted when the agent's workflow run
 	// times out during coding or refinement.  Counting these comments tells
 	// the orchestrator how many continue attempts have been made so far.
-	AgentContinueCommentMarker = "<!-- copilot-autocode:agent-continue -->"
+	AgentContinueCommentMarker = "<!-- copilot-autodev:agent-continue -->"
 
 	// MergeConflictContinueCommentMarker is an invisible HTML comment embedded
 	// in every "@copilot continue" nudge posted while the agent is stuck
 	// resolving merge conflicts.  Keeping this separate from
 	// AgentContinueCommentMarker gives the merge-conflict phase its own retry
 	// budget so it cannot starve the refinement+CI feedback loop.
-	MergeConflictContinueCommentMarker = "<!-- copilot-autocode:merge-conflict-continue -->"
+	MergeConflictContinueCommentMarker = "<!-- copilot-autodev:merge-conflict-continue -->"
 
 	// LocalResolutionCommentMarker is embedded in the notice posted after a
 	// local AI merge resolution attempt (both success and failure).
-	LocalResolutionCommentMarker = "<!-- copilot-autocode:local-resolution -->"
+	LocalResolutionCommentMarker = "<!-- copilot-autodev:local-resolution -->"
 
 	// LocalResolutionFailedMarker is embedded only in failure notices.  The
 	// orchestrator checks for this marker to avoid retrying after a failure,
 	// while still allowing re-runs if a previous resolution succeeded but new
 	// conflicts arise later.
-	LocalResolutionFailedMarker = "<!-- copilot-autocode:local-resolution-failed -->"
+	LocalResolutionFailedMarker = "<!-- copilot-autodev:local-resolution-failed -->"
 
 	// PRLinkCommentMarker is embedded in an issue comment to explicitly link it to a PR.
-	PRLinkCommentMarker = "<!-- copilot-autocode:pr-link:"
+	PRLinkCommentMarker = "<!-- copilot-autodev:pr-link:"
 
 	// IssueLinkCommentMarker is embedded in a PR comment to explicitly link it to an Issue.
-	IssueLinkCommentMarker = "<!-- copilot-autocode:issue-link:"
+	IssueLinkCommentMarker = "<!-- copilot-autodev:issue-link:"
 
 	// CopilotJobIDCommentMarker is embedded in the tracking comment posted
 	// after invoking the Copilot API.  It records the job/task ID returned
 	// by the API so the orchestrator can avoid duplicate invocations.
-	// Format: <!-- copilot-autocode:job-id:UUID -->.
-	CopilotJobIDCommentMarker = "<!-- copilot-autocode:job-id:"
+	// Format: <!-- copilot-autodev:job-id:UUID -->.
+	CopilotJobIDCommentMarker = "<!-- copilot-autodev:job-id:"
 
 	// CIFixCommentMarker is an invisible HTML comment embedded in every
 	// CI-fix-only prompt posted after refinement rounds are exhausted but CI
 	// is still failing.  Counting these comments tells the orchestrator how
 	// many CI-fix attempts have been made.
-	CIFixCommentMarker = "<!-- copilot-autocode:ci-fix -->"
+	CIFixCommentMarker = "<!-- copilot-autodev:ci-fix -->"
 
 	// DeploymentPendingCommentMarker is embedded in the one-time notice
 	// posted when a workflow run has conclusion=action_required (environment
 	// deployment gate) and the orchestrator's token cannot approve it.
 	// Combined with SHAMarker("deployment-pending", sha) for per-SHA dedup.
-	DeploymentPendingCommentMarker = "<!-- copilot-autocode:deployment-pending -->"
+	DeploymentPendingCommentMarker = "<!-- copilot-autodev:deployment-pending -->"
 )
 
 // FailedJobInfo describes a single failed CI job.
@@ -302,7 +302,7 @@ func (c *Client) FindLinkedPRFromComments(ctx context.Context, issueNum int) (in
 		for _, cm := range comments {
 			body := cm.GetBody()
 			if idx := strings.Index(body, PRLinkCommentMarker); idx != -1 {
-				// Parse the number. Format: <!-- copilot-autocode:pr-link:123 -->
+				// Parse the number. Format: <!-- copilot-autodev:pr-link:123 -->
 				start := idx + len(PRLinkCommentMarker)
 				end := strings.Index(body[start:], "-->")
 				if end != -1 {
@@ -387,7 +387,7 @@ func (c *Client) findPRByIssueComment(ctx context.Context, issueNum int) (*githu
 }
 
 func (c *Client) FindPRByMarkerComment(ctx context.Context, issueNum int) *github.PullRequest {
-	markerText := fmt.Sprintf("copilot-autocode:issue-link:%d", issueNum)
+	markerText := fmt.Sprintf("copilot-autodev:issue-link:%d", issueNum)
 	markerQuery := fmt.Sprintf("repo:%s/%s is:pr is:open %s", c.owner, c.repo, markerText)
 	markerResult, _, err := c.gh.Search.Issues(ctx, markerQuery, nil)
 	if err != nil {
@@ -531,7 +531,7 @@ func (c *Client) ensureTwoWayLink(ctx context.Context, issueNum, prNum int) {
 	issueMarker := fmt.Sprintf("%s%d -->", PRLinkCommentMarker, prNum)
 	if ok, _, _ := c.HasCommentContaining(ctx, issueNum, issueMarker); !ok {
 		body := fmt.Sprintf(
-			"copilot-autocode: Tracking PR #%d for this issue.\n%s%d -->",
+			"copilot-autodev: Tracking PR #%d for this issue.\n%s%d -->",
 			prNum, PRLinkCommentMarker, prNum,
 		)
 		_ = c.PostComment(ctx, issueNum, body)
@@ -541,7 +541,7 @@ func (c *Client) ensureTwoWayLink(ctx context.Context, issueNum, prNum int) {
 	prMarker := fmt.Sprintf("%s%d -->", IssueLinkCommentMarker, issueNum)
 	if ok, _, _ := c.HasCommentContaining(ctx, prNum, prMarker); !ok {
 		body := fmt.Sprintf(
-			"copilot-autocode: This PR is addressing Issue #%d.\n%s%d -->",
+			"copilot-autodev: This PR is addressing Issue #%d.\n%s%d -->",
 			issueNum, IssueLinkCommentMarker, issueNum,
 		)
 		_ = c.PostComment(ctx, prNum, body)
@@ -685,7 +685,7 @@ func (c *Client) UpdatePRBranch(ctx context.Context, prNum int) error {
 func (c *Client) LatestWorkflowRun(ctx context.Context, sha string) ([]*github.WorkflowRun, error) {
 	const cacheTTL = 30 * time.Second
 	if v, ok := c.workflowRunCache.Load(sha); ok {
-		if e := v.(workflowRunCacheEntry); time.Since(e.fetchedAt) < cacheTTL {
+		if e, ok := v.(workflowRunCacheEntry); ok && time.Since(e.fetchedAt) < cacheTTL {
 			return e.runs, nil
 		}
 	}
@@ -961,7 +961,7 @@ func (c *Client) ApprovePendingDeployments(ctx context.Context, runID int64) (in
 	_, _, err = c.gh.Actions.PendingDeployments(ctx, c.owner, c.repo, runID, &github.PendingDeploymentsRequest{
 		EnvironmentIDs: envIDs,
 		State:          "approved",
-		Comment:        "Auto-approved by copilot-autocode",
+		Comment:        "Auto-approved by copilot-autodev",
 	})
 	if err != nil {
 		return 0, fmt.Errorf("approve pending deployments for run %d: %w", runID, err)
@@ -1046,7 +1046,8 @@ func (c *Client) LastSuccessfulLocalResolutionAt(ctx context.Context, num int) (
 		}
 		for _, cm := range comments {
 			body := cm.GetBody()
-			if strings.Contains(body, LocalResolutionCommentMarker) && !strings.Contains(body, LocalResolutionFailedMarker) {
+			if strings.Contains(body, LocalResolutionCommentMarker) &&
+				!strings.Contains(body, LocalResolutionFailedMarker) {
 				if t := cm.GetCreatedAt().Time; t.After(latest) {
 					latest = t
 				}
@@ -1094,7 +1095,12 @@ func (c *Client) countCommentsWithMarker(ctx context.Context, num int, marker st
 
 // countCommentsWithMarkerSince counts issue/PR comments containing the given marker
 // that were created after the given time (or all if since is zero).
-func (c *Client) countCommentsWithMarkerSince(ctx context.Context, num int, marker string, since time.Time) (int, error) {
+func (c *Client) countCommentsWithMarkerSince(
+	ctx context.Context,
+	num int,
+	marker string,
+	since time.Time,
+) (int, error) {
 	count := 0
 	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: perPageDefault}}
 	for {
@@ -1362,7 +1368,7 @@ func (c *Client) GetJobStatusAt(ctx context.Context, endpoint, jobID string) (*C
 	if err != nil {
 		return nil, fmt.Errorf("build copilot job status request: %w", err)
 	}
-	req.Header.Set("Copilot-Integration-Id", "copilot-autocode")
+	req.Header.Set("Copilot-Integration-Id", "copilot-autodev")
 	req.Header.Set("X-Github-Api-Version", copilotAPIVersion)
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
@@ -1463,9 +1469,9 @@ func (c *Client) InvokeAgentAt(
 	ctx context.Context, endpoint, prompt, issueTitle string, issueNum int, issueURL string,
 ) (string, error) {
 	body, err := json.Marshal(&CopilotAgentJobRequest{
-		Title:            fmt.Sprintf("[copilot-autocode] #%d: %s", issueNum, issueTitle),
+		Title:            fmt.Sprintf("[copilot-autodev] #%d: %s", issueNum, issueTitle),
 		ProblemStatement: prompt,
-		EventType:        "copilot-autocode",
+		EventType:        "copilot-autodev",
 		IssueNumber:      issueNum,
 		IssueURL:         issueURL,
 	})
@@ -1479,7 +1485,7 @@ func (c *Client) InvokeAgentAt(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Copilot-Integration-Id", "copilot-autocode")
+	req.Header.Set("Copilot-Integration-Id", "copilot-autodev")
 	req.Header.Set("X-Github-Api-Version", copilotAPIVersion)
 
 	resp, err := c.httpClient().Do(req)
@@ -1627,7 +1633,7 @@ func SHAMarker(prefix, sha string) string {
 	if len(short) > shortSHALen {
 		short = short[:7]
 	}
-	return fmt.Sprintf("<!-- copilot-autocode:%s:%s -->", prefix, short)
+	return fmt.Sprintf("<!-- copilot-autodev:%s:%s -->", prefix, short)
 }
 
 // TimelineEntry represents a single event in an issue's activity feed.

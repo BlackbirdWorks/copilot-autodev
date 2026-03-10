@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/BlackbirdWorks/copilot-autocode/poller"
+	"github.com/BlackbirdWorks/copilot-autodev/poller"
 )
 
 func TestPRTask_SyncBranch(t *testing.T) {
@@ -195,7 +195,7 @@ func TestPRTask_CheckGates(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		mockHandler func(w http.ResponseWriter, r *http.Request)
+		mockHandler func(w http.ResponseWriter, _ *http.Request)
 		wantStop    bool
 		wantCurrent string
 		wantErr     bool
@@ -269,7 +269,7 @@ func TestPRTask_HandleTimeout(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		mockHandler func(w http.ResponseWriter, r *http.Request)
+		mockHandler func(w http.ResponseWriter, _ *http.Request)
 		wantStop    bool
 		wantCurrent string
 		wantErr     bool
@@ -368,7 +368,10 @@ func TestPRTask_Refine(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			p := setupMockPoller(t, tt.mockHandler)
-			pr := &github.PullRequest{Number: github.Ptr(123), Head: &github.PullRequestBranch{SHA: github.Ptr("head-sha")}}
+			pr := &github.PullRequest{
+				Number: github.Ptr(123),
+				Head:   &github.PullRequestBranch{SHA: github.Ptr("head-sha")},
+			}
 			displayInfo := make(map[int]*poller.IssueDisplayInfo)
 			task := &poller.PRTask{
 				P:           p,
@@ -491,8 +494,11 @@ func TestPRTask_WaitForCI(t *testing.T) {
 			p := setupMockPoller(t, tt.mockHandler)
 			displayInfo := make(map[int]*poller.IssueDisplayInfo)
 			task := &poller.PRTask{
-				P:           p,
-				PR:          &github.PullRequest{Number: github.Ptr(123), Head: &github.PullRequestBranch{SHA: github.Ptr("sha")}},
+				P: p,
+				PR: &github.PullRequest{
+					Number: github.Ptr(123),
+					Head:   &github.PullRequestBranch{SHA: github.Ptr("sha")},
+				},
 				Num:         123,
 				Sha:         "sha",
 				DisplayInfo: displayInfo,
@@ -557,8 +563,11 @@ func TestPRTask_FixCI(t *testing.T) {
 			p.Cfg().MaxCIFixRounds = 3
 			displayInfo := make(map[int]*poller.IssueDisplayInfo)
 			task := &poller.PRTask{
-				P:           p,
-				PR:          &github.PullRequest{Number: github.Ptr(123), Head: &github.PullRequestBranch{SHA: github.Ptr("sha")}},
+				P: p,
+				PR: &github.PullRequest{
+					Number: github.Ptr(123),
+					Head:   &github.PullRequestBranch{SHA: github.Ptr("sha")},
+				},
 				Num:         123,
 				Sha:         "sha",
 				DisplayInfo: displayInfo,
@@ -590,8 +599,11 @@ func TestPRTask_Run(t *testing.T) {
 	})
 	displayInfo := make(map[int]*poller.IssueDisplayInfo)
 	task := &poller.PRTask{
-		P:           p,
-		PR:          &github.PullRequest{Number: github.Ptr(123), Head: &github.PullRequestBranch{SHA: github.Ptr("sha")}},
+		P: p,
+		PR: &github.PullRequest{
+			Number: github.Ptr(123),
+			Head:   &github.PullRequestBranch{SHA: github.Ptr("sha")},
+		},
 		Num:         123,
 		Sha:         "sha",
 		DisplayInfo: displayInfo,

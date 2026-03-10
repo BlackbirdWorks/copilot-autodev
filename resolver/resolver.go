@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
 )
 
 // Runner defines the interface for executing system commands.
@@ -32,7 +32,7 @@ type LogRunner struct {
 	log   io.Writer
 }
 
-func (r *LogRunner) Run(ctx context.Context, out io.Writer, dir, token, name string, args ...string) error {
+func (r *LogRunner) Run(ctx context.Context, _ io.Writer, dir, token, name string, args ...string) error {
 	fmt.Fprintf(r.log, "$ %s %s\n", name, strings.Join(args, " "))
 	err := r.inner.Run(ctx, r.log, dir, token, name, args...)
 	if err != nil {
@@ -103,7 +103,13 @@ func LogPath(prNum int) string {
 //
 // The GitHub token is used only for authenticated git operations and is
 // redacted from all returned error messages and log files.
-func (r *Resolver) RunLocalResolution(ctx context.Context, token string, prd PRDetails, cfg *config.Config, prNum int) (string, error) {
+func (r *Resolver) RunLocalResolution(
+	ctx context.Context,
+	token string,
+	prd PRDetails,
+	cfg *config.Config,
+	prNum int,
+) (string, error) {
 	// Open the per-PR log file in append mode so previous attempt details
 	// are preserved when the user retries via 'r'.  A separator line marks
 	// each new attempt so the viewer stays readable.
@@ -125,7 +131,7 @@ func (r *Resolver) RunLocalResolution(ctx context.Context, token string, prd PRD
 	logged := &LogRunner{inner: r.runner, log: logFile}
 	lr := &Resolver{runner: logged}
 
-	tmpDir, err := os.MkdirTemp("", "copilot-autocode-merge-*")
+	tmpDir, err := os.MkdirTemp("", "copilot-autodev-merge-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
@@ -149,11 +155,11 @@ func (r *Resolver) RunLocalResolution(ctx context.Context, token string, prd PRD
 	// Configure a git identity so the merge commit is accepted.
 	if err := lr.run(
 		ctx, tmpDir, token,
-		"git", "config", "user.email", "copilot-autocode@users.noreply.github.com",
+		"git", "config", "user.email", "copilot-autodev@users.noreply.github.com",
 	); err != nil {
 		return "", fmt.Errorf("git config user.email: %w", err)
 	}
-	if err := lr.run(ctx, tmpDir, token, "git", "config", "user.name", "copilot-autocode"); err != nil {
+	if err := lr.run(ctx, tmpDir, token, "git", "config", "user.name", "copilot-autodev"); err != nil {
 		return "", fmt.Errorf("git config user.name: %w", err)
 	}
 
@@ -290,7 +296,7 @@ func run(ctx context.Context, out io.Writer, dir, token, name string, args ...st
 		// AFTER the login shell has sourced .zprofile/.profile (which otherwise
 		// could clear env vars set via cmd.Env before our shell command runs).
 		var tokenPrefix string
-		if !(strings.Contains(name, "copilot") && strings.HasPrefix(token, "ghp_")) {
+		if !strings.Contains(name, "copilot") || !strings.HasPrefix(token, "ghp_") {
 			tokenPrefix = fmt.Sprintf(
 				"GITHUB_TOKEN=%s GH_TOKEN=%s COPILOT_GITHUB_TOKEN=%s ",
 				token, token, token,
@@ -322,14 +328,14 @@ func run(ctx context.Context, out io.Writer, dir, token, name string, args ...st
 	env := make([]string, 0, len(os.Environ())+3)
 	for _, kv := range os.Environ() {
 		key := kv
-		if idx := strings.IndexByte(kv, '='); idx >= 0 {
-			key = kv[:idx]
+		if before, _, ok := strings.Cut(kv, "="); ok {
+			key = before
 		}
 		if !tokenKeys[key] {
 			env = append(env, kv)
 		}
 	}
-	if !(strings.Contains(name, "copilot") && strings.HasPrefix(token, "ghp_")) {
+	if !strings.Contains(name, "copilot") || !strings.HasPrefix(token, "ghp_") {
 		env = append(env,
 			"GITHUB_TOKEN="+token,
 			"GH_TOKEN="+token,

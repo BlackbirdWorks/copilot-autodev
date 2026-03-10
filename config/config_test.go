@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
 )
 
 // writeConfig writes content to a temp file and returns its path.

@@ -10,7 +10,7 @@ import (
 	"github.com/google/go-github/v68/github"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/BlackbirdWorks/copilot-autocode/poller"
+	"github.com/BlackbirdWorks/copilot-autodev/poller"
 )
 
 func TestSortIssuesAsc(t *testing.T) {
@@ -31,6 +31,7 @@ func TestSortIssuesAsc(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			poller.SortIssuesAsc(tt.input)
 			actual := make([]int, len(tt.input))
 			for i, v := range tt.input {
@@ -87,6 +88,7 @@ func TestPoller_PromoteFromQueue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			p := setupMockPoller(t, func(w http.ResponseWriter, r *http.Request) {
 				path := r.URL.Path
 				switch {

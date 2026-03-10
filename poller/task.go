@@ -9,9 +9,9 @@ import (
 
 	"github.com/google/go-github/v68/github"
 
-	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
-	"github.com/BlackbirdWorks/copilot-autocode/pkgs/logger"
-	"github.com/BlackbirdWorks/copilot-autocode/resolver"
+	"github.com/BlackbirdWorks/copilot-autodev/ghclient"
+	"github.com/BlackbirdWorks/copilot-autodev/pkgs/logger"
+	"github.com/BlackbirdWorks/copilot-autodev/resolver"
 )
 
 // PRTask is a single-tick execution context for one PR/issue pair.
@@ -70,7 +70,8 @@ func (t *PRTask) SyncBranch(ctx context.Context) (bool, error) {
 			AgentStatus: "pending",
 		})
 		if err := t.P.gh.UpdatePRBranch(ctx, t.PR.GetNumber()); err != nil {
-			logger.Load(ctx).WarnContext(ctx, "failed to update PR branch", slog.Int("pr", t.PR.GetNumber()), slog.Any("err", err))
+			logger.Load(ctx).
+				WarnContext(ctx, "failed to update PR branch", slog.Int("pr", t.PR.GetNumber()), slog.Any("err", err))
 		} else {
 			return true, nil
 		}
@@ -96,7 +97,7 @@ func (t *PRTask) SyncBranch(ctx context.Context) (bool, error) {
 	return t.requestMergeConflictFix(ctx)
 }
 
-func (t *PRTask) resolveConflictsLocally(ctx context.Context, attempts int) (bool, error) {
+func (t *PRTask) resolveConflictsLocally(ctx context.Context, _ int) (bool, error) {
 	alreadyTried, _, _ := t.P.gh.HasCommentContaining(ctx, t.PR.GetNumber(), ghclient.LocalResolutionFailedMarker)
 	if alreadyTried {
 		t.Display(IssueDisplayInfo{
@@ -145,7 +146,13 @@ func (t *PRTask) resolveConflictsLocally(ctx context.Context, attempts int) (boo
 			slog.String("log", logPath),
 			slog.Any("err", err),
 		)
-		notice := fmt.Sprintf("copilot-autocode: local AI merge resolution via `%s` failed. Manual conflict resolution is required.\nSee `%s` for details.\n%s\n%s", t.P.cfg.AIMergeResolverCmd, logPath, ghclient.LocalResolutionCommentMarker, ghclient.LocalResolutionFailedMarker)
+		notice := fmt.Sprintf(
+			"copilot-autodev: local AI merge resolution via `%s` failed. Manual conflict resolution is required.\nSee `%s` for details.\n%s\n%s",
+			t.P.cfg.AIMergeResolverCmd,
+			logPath,
+			ghclient.LocalResolutionCommentMarker,
+			ghclient.LocalResolutionFailedMarker,
+		)
 		_ = t.P.gh.PostComment(ctx, t.PR.GetNumber(), notice)
 		// Set MergeLogPath in the display immediately so the user can press
 		// 'v' on this tick without waiting for the next poll.
@@ -157,7 +164,12 @@ func (t *PRTask) resolveConflictsLocally(ctx context.Context, attempts int) (boo
 		})
 		return true, nil
 	}
-	notice := fmt.Sprintf("copilot-autocode: Merge conflicts were resolved locally by copilot-autocode using `%s`.\n%s\n%s", t.P.cfg.AIMergeResolverCmd, ghclient.LocalResolutionCommentMarker, ghclient.SHAMarker("local-resolution-success", newSha))
+	notice := fmt.Sprintf(
+		"copilot-autodev: Merge conflicts were resolved locally by copilot-autodev using `%s`.\n%s\n%s",
+		t.P.cfg.AIMergeResolverCmd,
+		ghclient.LocalResolutionCommentMarker,
+		ghclient.SHAMarker("local-resolution-success", newSha),
+	)
 	_ = t.P.gh.PostComment(ctx, t.PR.GetNumber(), notice)
 	return true, nil
 }
@@ -171,7 +183,7 @@ func (t *PRTask) requestMergeConflictFix(ctx context.Context) (bool, error) {
 			countFn:      t.P.gh.CountMergeConflictContinueComments,
 			nudgeMarker:  ghclient.MergeConflictContinueCommentMarker,
 			promptKind:   "merge-conflict prompt",
-			noticeFormat: "copilot-autocode: the Copilot coding agent became unresponsive while resolving merge conflicts and %d nudge(s) were exhausted. The PR has been left open in review for manual inspection.",
+			noticeFormat: "copilot-autodev: the Copilot coding agent became unresponsive while resolving merge conflicts and %d nudge(s) were exhausted. The PR has been left open in review for manual inspection.",
 			statusVerb:   "nudges",
 		}
 		t.P.HandleAgentTimeout(ctx, t.PR, t.Num, latestOf(postedAt, lastContinue), mergeTimeoutCfg, t.DisplayInfo)
@@ -207,7 +219,11 @@ func (t *PRTask) ApproveRuns(ctx context.Context) (bool, error) {
 		runID := r.GetID()
 		if err := t.P.gh.ApproveWorkflowRun(ctx, runID); err != nil {
 			if count := t.P.incApproveRetry(runID); count >= t.P.cfg.MaxAgentContinueRetries {
-				notice := fmt.Sprintf("copilot-autocode: failed to automatically approve the GitHub Actions workflow run '%s' after %d retries. The PR has been left open in review for manual inspection.", r.GetName(), count)
+				notice := fmt.Sprintf(
+					"copilot-autodev: failed to automatically approve the GitHub Actions workflow run '%s' after %d retries. The PR has been left open in review for manual inspection.",
+					r.GetName(),
+					count,
+				)
 				_ = t.P.gh.PostComment(ctx, t.PR.GetNumber(), notice)
 				return true, nil
 			}
@@ -259,7 +275,12 @@ func (t *PRTask) CheckGates(ctx context.Context) (bool, error) {
 	if posted, _, _ := t.P.gh.HasCommentContaining(ctx, t.PR.GetNumber(), shaTag); posted {
 		return true, nil
 	}
-	notice := fmt.Sprintf("copilot-autocode: PR requires manual deployment approval for workflow(s): %s. Waiting for a reviewer to approve the environment deployment before proceeding.\n%s\n%s", strings.Join(names, ", "), ghclient.DeploymentPendingCommentMarker, shaTag)
+	notice := fmt.Sprintf(
+		"copilot-autodev: PR requires manual deployment approval for workflow(s): %s. Waiting for a reviewer to approve the environment deployment before proceeding.\n%s\n%s",
+		strings.Join(names, ", "),
+		ghclient.DeploymentPendingCommentMarker,
+		shaTag,
+	)
 	_ = t.P.gh.PostComment(ctx, t.PR.GetNumber(), notice)
 	return true, nil
 }
@@ -341,7 +362,10 @@ func (t *PRTask) HandleTimeout(ctx context.Context) (bool, error) {
 				return false, nil
 			}
 		}
-		notice := fmt.Sprintf("copilot-autocode: the Copilot coding agent timed out and %d continue attempt(s) were exhausted. The PR has been left open in review for manual inspection.", continueCount)
+		notice := fmt.Sprintf(
+			"copilot-autodev: the Copilot coding agent timed out and %d continue attempt(s) were exhausted. The PR has been left open in review for manual inspection.",
+			continueCount,
+		)
 		_ = t.P.gh.PostComment(ctx, t.Num, notice)
 		t.Display(IssueDisplayInfo{
 			Current:     fmt.Sprintf("Agent timed out after %d retries — left in review", continueCount),
@@ -364,7 +388,11 @@ func (t *PRTask) HandleTimeout(ctx context.Context) (bool, error) {
 	deadline := lastActivity.Add(delay)
 	if timeNow().Before(deadline) {
 		t.Display(IssueDisplayInfo{
-			Current:      fmt.Sprintf("Agent timed out (attempt %d of %d)", continueCount+1, t.P.cfg.MaxAgentContinueRetries),
+			Current: fmt.Sprintf(
+				"Agent timed out (attempt %d of %d)",
+				continueCount+1,
+				t.P.cfg.MaxAgentContinueRetries,
+			),
 			Next:         "Post continue",
 			NextActionAt: deadline,
 			PR:           t.PR,
@@ -375,7 +403,11 @@ func (t *PRTask) HandleTimeout(ctx context.Context) (bool, error) {
 
 	_ = t.P.gh.PostComment(ctx, t.PR.GetNumber(), t.P.cfg.AgentContinuePrompt+"\n"+ghclient.AgentContinueCommentMarker)
 	t.Display(IssueDisplayInfo{
-		Current:     fmt.Sprintf("Agent timed out — continue posted (attempt %d of %d)", continueCount+1, t.P.cfg.MaxAgentContinueRetries),
+		Current: fmt.Sprintf(
+			"Agent timed out — continue posted (attempt %d of %d)",
+			continueCount+1,
+			t.P.cfg.MaxAgentContinueRetries,
+		),
 		PR:          t.PR,
 		AgentStatus: "pending",
 	})
@@ -406,7 +438,17 @@ func (t *PRTask) Refine(ctx context.Context) (bool, error) {
 	alreadyPosted, postedAt, _ := t.P.gh.HasReviewContaining(ctx, t.PR.GetNumber(), refSHATag)
 	if alreadyPosted {
 		lastContinue, _ := t.P.gh.LastAgentContinueAt(ctx, t.PR.GetNumber())
-		if t.P.HandleAgentTimeout(ctx, t.PR, t.Num, latestOf(postedAt, lastContinue), t.P.continueTimeoutCfg("refinement prompt", "copilot-autocode: the Copilot coding agent became unresponsive and %d continue attempt(s) were exhausted. The PR has been left open in review for manual inspection."), t.DisplayInfo) {
+		if t.P.HandleAgentTimeout(
+			ctx,
+			t.PR,
+			t.Num,
+			latestOf(postedAt, lastContinue),
+			t.P.continueTimeoutCfg(
+				"refinement prompt",
+				"copilot-autodev: the Copilot coding agent became unresponsive and %d continue attempt(s) were exhausted. The PR has been left open in review for manual inspection.",
+			),
+			t.DisplayInfo,
+		) {
 			return true, nil
 		}
 		t.DisplayInfo[t.Num] = &IssueDisplayInfo{
@@ -453,7 +495,18 @@ func (t *PRTask) FixCI(ctx context.Context) (bool, error) {
 	ciSHATag := ghclient.SHAMarker("ci-fix", t.Sha)
 	alreadyPosted, postedAt, _ := t.P.gh.HasCommentContaining(ctx, t.PR.GetNumber(), ciSHATag)
 	if alreadyPosted {
-		t.P.WaitForAgentCycle(ctx, t.PR, t.Num, postedAt, t.P.continueTimeoutCfg("CI-fix prompt", "copilot-autocode: the Copilot coding agent became unresponsive during CI fixing and %d continue attempt(s) were exhausted. The PR has been left open in review for manual inspection."), fmt.Sprintf("CI-fix %d/%d — waiting for agent", ciFixSent, t.P.cfg.MaxCIFixRounds), t.DisplayInfo)
+		t.P.WaitForAgentCycle(
+			ctx,
+			t.PR,
+			t.Num,
+			postedAt,
+			t.P.continueTimeoutCfg(
+				"CI-fix prompt",
+				"copilot-autodev: the Copilot coding agent became unresponsive during CI fixing and %d continue attempt(s) were exhausted. The PR has been left open in review for manual inspection.",
+			),
+			fmt.Sprintf("CI-fix %d/%d — waiting for agent", ciFixSent, t.P.cfg.MaxCIFixRounds),
+			t.DisplayInfo,
+		)
 		return true, nil
 	}
 
@@ -461,7 +514,14 @@ func (t *PRTask) FixCI(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	body := fmt.Sprintf("@copilot (CI-fix %d of %d). The tests are still failing — please fix them.%s\n%s\n%s", ciFixSent+1, t.P.cfg.MaxCIFixRounds, BuildCIFailureSection(workflowName, failedJobs), ghclient.CIFixCommentMarker, ciSHATag)
+	body := fmt.Sprintf(
+		"@copilot (CI-fix %d of %d). The tests are still failing — please fix them.%s\n%s\n%s",
+		ciFixSent+1,
+		t.P.cfg.MaxCIFixRounds,
+		BuildCIFailureSection(workflowName, failedJobs),
+		ghclient.CIFixCommentMarker,
+		ciSHATag,
+	)
 	if err := t.P.gh.PostComment(ctx, t.PR.GetNumber(), body); err != nil {
 		return false, err
 	}
@@ -478,7 +538,11 @@ func (t *PRTask) FixCI(ctx context.Context) (bool, error) {
 func (t *PRTask) Merge(ctx context.Context) error {
 	if !t.AllOK {
 		t.DisplayInfo[t.Num] = &IssueDisplayInfo{
-			Current:         fmt.Sprintf("Refinements (%d/%d) and CI-fix rounds exhausted — CI still failing", t.Sent, t.P.cfg.MaxRefinementRounds),
+			Current: fmt.Sprintf(
+				"Refinements (%d/%d) and CI-fix rounds exhausted — CI still failing",
+				t.Sent,
+				t.P.cfg.MaxRefinementRounds,
+			),
 			PR:              t.PR,
 			RefinementCount: t.Sent,
 			RefinementMax:   t.P.cfg.MaxRefinementRounds,
@@ -496,7 +560,8 @@ func (t *PRTask) Merge(ctx context.Context) error {
 	}
 
 	if err := t.P.gh.ApprovePR(ctx, t.PR.GetNumber()); err != nil {
-		if !strings.Contains(err.Error(), "already approved") && !strings.Contains(err.Error(), "Can not approve your own pull request") {
+		if !strings.Contains(err.Error(), "already approved") &&
+			!strings.Contains(err.Error(), "Can not approve your own pull request") {
 			return err
 		}
 	}

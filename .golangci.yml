@@ -36,7 +36,7 @@ formatters:
       # with the given prefixes are grouped after 3rd-party packages.
       # Default: []
       local-prefixes:
-        - github.com/BlackbirdWorks/copilot-autocode
+        - github.com/BlackbirdWorks/copilot-autodev
 
     golines:
       # Target maximum line length.

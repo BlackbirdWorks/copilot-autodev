@@ -15,9 +15,9 @@ import (
 
 	"github.com/google/go-github/v68/github"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
-	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
-	"github.com/BlackbirdWorks/copilot-autocode/pkgs/logger"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
+	"github.com/BlackbirdWorks/copilot-autodev/ghclient"
+	"github.com/BlackbirdWorks/copilot-autodev/pkgs/logger"
 )
 
 // IssueDisplayInfo holds the human-readable status for one issue, computed
@@ -165,7 +165,8 @@ func (p *Poller) drainCommands(ctx context.Context) {
 func (p *Poller) retryMergeResolution(ctx context.Context, prNum int) {
 	logger.Load(ctx).InfoContext(ctx, "retrying local merge resolution", slog.Int("pr", prNum))
 	if err := p.gh.DeleteCommentContaining(ctx, prNum, ghclient.LocalResolutionFailedMarker); err != nil {
-		logger.Load(ctx).WarnContext(ctx, "failed to delete merge resolution failure marker", slog.Int("pr", prNum), slog.Any("err", err))
+		logger.Load(ctx).
+			WarnContext(ctx, "failed to delete merge resolution failure marker", slog.Int("pr", prNum), slog.Any("err", err))
 	}
 }
 
@@ -174,7 +175,8 @@ func (p *Poller) retryMergeResolution(ctx context.Context, prNum int) {
 func (p *Poller) takeoverIssue(ctx context.Context, issueNum int) {
 	logger.Load(ctx).InfoContext(ctx, "manual takeover requested", slog.Int("issue", issueNum))
 	if err := p.gh.AddLabel(ctx, issueNum, p.cfg.LabelTakeover); err != nil {
-		logger.Load(ctx).WarnContext(ctx, "failed to add takeover label", slog.Int("issue", issueNum), slog.Any("err", err))
+		logger.Load(ctx).
+			WarnContext(ctx, "failed to add takeover label", slog.Int("issue", issueNum), slog.Any("err", err))
 		return
 	}
 	for _, lbl := range []string{p.cfg.LabelQueue, p.cfg.LabelCoding, p.cfg.LabelReview} {
@@ -187,19 +189,22 @@ func (p *Poller) rerunCI(ctx context.Context, prNum int) {
 	logger.Load(ctx).InfoContext(ctx, "force re-run CI requested", slog.Int("pr", prNum))
 	sha, err := p.gh.GetPRHeadSHA(ctx, prNum)
 	if err != nil {
-		logger.Load(ctx).WarnContext(ctx, "could not get PR head SHA for rerun", slog.Int("pr", prNum), slog.Any("err", err))
+		logger.Load(ctx).
+			WarnContext(ctx, "could not get PR head SHA for rerun", slog.Int("pr", prNum), slog.Any("err", err))
 		return
 	}
 	runs, err := p.gh.LatestWorkflowRun(ctx, sha)
 	if err != nil {
-		logger.Load(ctx).WarnContext(ctx, "could not list workflow runs for rerun", slog.Int("pr", prNum), slog.Any("err", err))
+		logger.Load(ctx).
+			WarnContext(ctx, "could not list workflow runs for rerun", slog.Int("pr", prNum), slog.Any("err", err))
 		return
 	}
 	for _, r := range runs {
 		c := r.GetConclusion()
 		if c == "failure" || c == "timed_out" || c == "cancelled" || c == "action_required" {
 			if rerunErr := p.gh.RerunWorkflow(ctx, r.GetID()); rerunErr != nil {
-				logger.Load(ctx).WarnContext(ctx, "failed to rerun workflow", slog.Int64("run", r.GetID()), slog.Any("err", rerunErr))
+				logger.Load(ctx).
+					WarnContext(ctx, "failed to rerun workflow", slog.Int64("run", r.GetID()), slog.Any("err", rerunErr))
 			}
 		}
 	}
@@ -372,7 +377,7 @@ func (p *Poller) PromoteFromQueue(ctx context.Context, queue []*github.Issue) er
 		}
 
 		comment := fmt.Sprintf(
-			"copilot-autocode: agent task created for issue #%d (initial invoke).\n%s",
+			"copilot-autodev: agent task created for issue #%d (initial invoke).\n%s",
 			num, ghclient.CopilotNudgeCommentMarker,
 		)
 		if jobID != "" {
@@ -387,7 +392,11 @@ func (p *Poller) PromoteFromQueue(ctx context.Context, queue []*github.Issue) er
 }
 
 // ProcessCodingIssue handles a single ai-coding issue.
-func (p *Poller) ProcessCodingIssue(ctx context.Context, issue *github.Issue, displayInfo map[int]*IssueDisplayInfo) error {
+func (p *Poller) ProcessCodingIssue(
+	ctx context.Context,
+	issue *github.Issue,
+	displayInfo map[int]*IssueDisplayInfo,
+) error {
 	num := issue.GetNumber()
 	pr, err := p.gh.OpenPRForIssue(ctx, issue)
 	if err != nil {
@@ -413,11 +422,21 @@ func (p *Poller) ProcessCodingIssue(ctx context.Context, issue *github.Issue, di
 		return p.gh.CloseIssue(ctx, num)
 	}
 
-	return p.NudgeSingleCodingIssue(ctx, issue, displayInfo, time.Duration(p.cfg.CopilotInvokeTimeoutSeconds)*time.Second)
+	return p.NudgeSingleCodingIssue(
+		ctx,
+		issue,
+		displayInfo,
+		time.Duration(p.cfg.CopilotInvokeTimeoutSeconds)*time.Second,
+	)
 }
 
 // ProcessCodingPR handles the PR-present path of ProcessCodingIssue.
-func (p *Poller) ProcessCodingPR(ctx context.Context, pr *github.PullRequest, num int, displayInfo map[int]*IssueDisplayInfo) error {
+func (p *Poller) ProcessCodingPR(
+	ctx context.Context,
+	pr *github.PullRequest,
+	num int,
+	displayInfo map[int]*IssueDisplayInfo,
+) error {
 	sha := pr.GetHead().GetSHA()
 	running, err := p.gh.AnyWorkflowRunActive(ctx, sha)
 	if err == nil && running {
@@ -440,14 +459,20 @@ func (p *Poller) ProcessCodingPR(ctx context.Context, pr *github.PullRequest, nu
 }
 
 // ProcessDraftPR promotes a draft PR when the agent is done.
-func (p *Poller) ProcessDraftPR(ctx context.Context, pr *github.PullRequest, num int, displayInfo map[int]*IssueDisplayInfo) error {
+func (p *Poller) ProcessDraftPR(
+	ctx context.Context,
+	pr *github.PullRequest,
+	num int,
+	displayInfo map[int]*IssueDisplayInfo,
+) error {
 	t := &PRTask{P: p, PR: pr, Num: num, Sha: pr.GetHead().GetSHA(), DisplayInfo: displayInfo}
 	if stop, err := t.HandleTimeout(ctx); err != nil || stop {
 		return err
 	}
 	logger.Load(ctx).InfoContext(ctx, "agent finished draft push; marking ready", slog.Int("pr", pr.GetNumber()))
 	if err := p.gh.MarkPRReady(ctx, pr); err != nil {
-		logger.Load(ctx).WarnContext(ctx, "could not mark PR as ready", slog.Int("pr", pr.GetNumber()), slog.Any("err", err))
+		logger.Load(ctx).
+			WarnContext(ctx, "could not mark PR as ready", slog.Int("pr", pr.GetNumber()), slog.Any("err", err))
 		displayInfo[num] = &IssueDisplayInfo{
 			Current:     "Agent completed but PR still draft — retrying",
 			Next:        "Retry mark ready next poll",
@@ -465,7 +490,12 @@ func (p *Poller) ProcessDraftPR(ctx context.Context, pr *github.PullRequest, num
 }
 
 // NudgeSingleCodingIssue handles timeout/retry/nudge for coding issues without a PR.
-func (p *Poller) NudgeSingleCodingIssue(ctx context.Context, issue *github.Issue, displayInfo map[int]*IssueDisplayInfo, timeout time.Duration) error {
+func (p *Poller) NudgeSingleCodingIssue(
+	ctx context.Context,
+	issue *github.Issue,
+	displayInfo map[int]*IssueDisplayInfo,
+	timeout time.Duration,
+) error {
 	num := issue.GetNumber()
 	displayInfo[num] = &IssueDisplayInfo{
 		Current: "Agent assigned, awaiting PR",
@@ -473,18 +503,21 @@ func (p *Poller) NudgeSingleCodingIssue(ctx context.Context, issue *github.Issue
 	}
 
 	codingAt, err := p.gh.CodingLabeledAt(ctx, num, p.cfg.LabelCoding)
-	if err != nil || codingAt.IsZero() {
+	if err != nil {
+		return err
+	}
+	if codingAt.IsZero() {
 		return nil
 	}
 
 	nudgeCount, err := p.gh.CountNudgesSince(ctx, num, codingAt)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	lastNudge, err := p.gh.LastNudgeAt(ctx, num)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	lastActivity := codingAt
@@ -549,20 +582,31 @@ func (p *Poller) IsAgentActive(ctx context.Context, num int) bool {
 }
 
 // RequestNudge re-invokes the agent via CAPI.
-func (p *Poller) RequestNudge(ctx context.Context, issue *github.Issue, num, nudgeCount int, timeout time.Duration, displayInfo map[int]*IssueDisplayInfo) error {
+func (p *Poller) RequestNudge(
+	ctx context.Context,
+	issue *github.Issue,
+	num, nudgeCount int,
+	_ time.Duration,
+	displayInfo map[int]*IssueDisplayInfo,
+) error {
 	displayInfo[num] = &IssueDisplayInfo{
-		Current: fmt.Sprintf("Invoking agent via Copilot API (attempt %d of %d)", nudgeCount+1, p.cfg.CopilotInvokeMaxRetries),
-		Next:    "Waiting for response",
+		Current: fmt.Sprintf(
+			"Invoking agent via Copilot API (attempt %d of %d)",
+			nudgeCount+1,
+			p.cfg.CopilotInvokeMaxRetries,
+		),
+		Next: "Waiting for response",
 	}
 
 	nudgeBody := FormatFallbackPrompt(p.cfg.FallbackIssueInvokePrompt, issue)
 	jobID, invokeErr := p.gh.InvokeCopilotAgent(ctx, nudgeBody, issue.GetTitle(), num, issue.GetHTMLURL())
 	if invokeErr != nil {
-		logger.Load(ctx).ErrorContext(ctx, "could not invoke copilot agent", slog.Int("issue", num), slog.Any("err", invokeErr))
+		logger.Load(ctx).
+			ErrorContext(ctx, "could not invoke copilot agent", slog.Int("issue", num), slog.Any("err", invokeErr))
 	}
 
 	comment := fmt.Sprintf(
-		"copilot-autocode: agent task created for issue #%d (attempt %d of %d).\n%s",
+		"copilot-autodev: agent task created for issue #%d (attempt %d of %d).\n%s",
 		num, nudgeCount+1, p.cfg.CopilotInvokeMaxRetries,
 		ghclient.CopilotNudgeCommentMarker,
 	)
@@ -618,7 +662,15 @@ func (p *Poller) clearApproveRetry(runID int64) {
 	delete(p.approveRetries, runID)
 }
 
-func (p *Poller) WaitForAgentCycle(ctx context.Context, pr *github.PullRequest, num int, postedAt time.Time, cfg agentTimeoutCfg, current string, displayInfo map[int]*IssueDisplayInfo) {
+func (p *Poller) WaitForAgentCycle(
+	ctx context.Context,
+	pr *github.PullRequest,
+	num int,
+	postedAt time.Time,
+	cfg agentTimeoutCfg,
+	current string,
+	displayInfo map[int]*IssueDisplayInfo,
+) {
 	lastContinue, _ := p.gh.LastAgentContinueAt(ctx, pr.GetNumber())
 	lastActivity := latestOf(postedAt, lastContinue)
 	if p.HandleAgentTimeout(ctx, pr, num, lastActivity, cfg, displayInfo) {
@@ -632,7 +684,14 @@ func (p *Poller) WaitForAgentCycle(ctx context.Context, pr *github.PullRequest, 
 	}
 }
 
-func (p *Poller) HandleAgentTimeout(ctx context.Context, pr *github.PullRequest, num int, lastActivity time.Time, cfg agentTimeoutCfg, displayInfo map[int]*IssueDisplayInfo) bool {
+func (p *Poller) HandleAgentTimeout(
+	ctx context.Context,
+	pr *github.PullRequest,
+	num int,
+	lastActivity time.Time,
+	cfg agentTimeoutCfg,
+	displayInfo map[int]*IssueDisplayInfo,
+) bool {
 	if time.Since(lastActivity) <= time.Duration(p.cfg.CopilotInvokeTimeoutSeconds)*time.Second {
 		return false
 	}
@@ -650,7 +709,12 @@ func (p *Poller) HandleAgentTimeout(ctx context.Context, pr *github.PullRequest,
 	return false
 }
 
-func (p *Poller) HandleMissingPR(ctx context.Context, issue *github.Issue, num int, displayInfo map[int]*IssueDisplayInfo) error {
+func (p *Poller) HandleMissingPR(
+	ctx context.Context,
+	issue *github.Issue,
+	num int,
+	displayInfo map[int]*IssueDisplayInfo,
+) error {
 	mergedPR, mErr := p.gh.MergedPRForIssue(ctx, issue)
 	if mErr == nil && mergedPR != nil {
 		displayInfo[num] = &IssueDisplayInfo{
@@ -697,9 +761,21 @@ func agentTimeoutDelay(cfg *config.Config) time.Duration {
 
 var timeNow = time.Now //nolint:gochecknoglobals
 
-func (p *Poller) BuildRefinementCIPrompt(ctx context.Context, round, maxRounds, issueNum int, anyFail bool, sha string) string {
+func (p *Poller) BuildRefinementCIPrompt(
+	ctx context.Context,
+	round, maxRounds, issueNum int,
+	anyFail bool,
+	sha string,
+) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "@copilot (refinement check %d of %d against issue #%d). %s Please address any review feedback.", round, maxRounds, issueNum, p.cfg.RefinementPrompt)
+	fmt.Fprintf(
+		&sb,
+		"@copilot (refinement check %d of %d against issue #%d). %s Please address any review feedback.",
+		round,
+		maxRounds,
+		issueNum,
+		p.cfg.RefinementPrompt,
+	)
 	if anyFail {
 		workflowName, failedJobs, err := p.gh.FailedRunDetails(ctx, sha)
 		if err == nil {
@@ -799,7 +875,7 @@ func DeduplicateIssueLists(queue, coding, reviewing []*github.Issue) ([]*github.
 func (p *Poller) SortQueueByPriority(issues []*github.Issue) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for i := 0; i < len(issues); i++ {
+	for i := range issues {
 		for j := i + 1; j < len(issues); j++ {
 			pi := p.priorities[issues[i].GetNumber()]
 			pj := p.priorities[issues[j].GetNumber()]
@@ -811,7 +887,7 @@ func (p *Poller) SortQueueByPriority(issues []*github.Issue) {
 }
 
 func SortIssuesAsc(issues []*github.Issue) {
-	for i := 0; i < len(issues); i++ {
+	for i := range issues {
 		for j := i + 1; j < len(issues); j++ {
 			if issues[i].GetNumber() > issues[j].GetNumber() {
 				issues[i], issues[j] = issues[j], issues[i]
@@ -827,8 +903,16 @@ func FormatFallbackPrompt(tpl string, issue *github.Issue) string {
 	return res
 }
 
-func (p *Poller) HandleNudgeExhaustion(ctx context.Context, num, nudgeCount int, displayInfo map[int]*IssueDisplayInfo) error {
-	_ = p.gh.PostComment(ctx, num, fmt.Sprintf("copilot-autocode: nudge limit reached (%d). Returning to queue.", nudgeCount))
+func (p *Poller) HandleNudgeExhaustion(
+	ctx context.Context,
+	num, nudgeCount int,
+	displayInfo map[int]*IssueDisplayInfo,
+) error {
+	_ = p.gh.PostComment(
+		ctx,
+		num,
+		fmt.Sprintf("copilot-autodev: nudge limit reached (%d). Returning to queue.", nudgeCount),
+	)
 	displayInfo[num] = &IssueDisplayInfo{
 		Current:     fmt.Sprintf("No response after %d nudge(s) — returning to queue", nudgeCount),
 		AgentStatus: "failed",

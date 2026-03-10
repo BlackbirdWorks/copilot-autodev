@@ -5,9 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
-	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
-	"github.com/BlackbirdWorks/copilot-autocode/poller"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
+	"github.com/BlackbirdWorks/copilot-autodev/ghclient"
+	"github.com/BlackbirdWorks/copilot-autodev/poller"
 )
 
 func setupMockPoller(t *testing.T, handler http.HandlerFunc) *poller.Poller {

@@ -1,11 +1,11 @@
-// copilot-autocode is a terminal UI application that acts as a headless
+// copilot-autodev is a terminal UI application that acts as a headless
 // "Copilot Orchestrator".  It manages a queue of GitHub issues, feeds them to
 // the native GitHub Copilot coding agent, and babysits the resulting pull
 // requests through CI feedback and merging.
 //
 // Usage:
 //
-//	GITHUB_TOKEN=<pat> copilot-autocode [--config config.yaml]
+//	GITHUB_TOKEN=<pat> copilot-autodev [--config config.yaml]
 package main
 
 import (
@@ -23,12 +23,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gen2brain/beeep"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
-	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
-	"github.com/BlackbirdWorks/copilot-autocode/pkgs/logger"
-	"github.com/BlackbirdWorks/copilot-autocode/pkgs/rotatinglog"
-	"github.com/BlackbirdWorks/copilot-autocode/poller"
-	"github.com/BlackbirdWorks/copilot-autocode/tui"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
+	"github.com/BlackbirdWorks/copilot-autodev/ghclient"
+	"github.com/BlackbirdWorks/copilot-autodev/pkgs/logger"
+	"github.com/BlackbirdWorks/copilot-autodev/pkgs/rotatinglog"
+	"github.com/BlackbirdWorks/copilot-autodev/poller"
+	"github.com/BlackbirdWorks/copilot-autodev/tui"
 )
 
 const (
@@ -104,7 +104,7 @@ func main() {
 	lw.start()
 
 	var logDest io.Writer = lw
-	rl, err := rotatinglog.New("copilot-autocode.log", cfg.LogMaxSizeMB, cfg.LogMaxFiles)
+	rl, err := rotatinglog.New("copilot-autodev.log", cfg.LogMaxSizeMB, cfg.LogMaxFiles)
 	if err != nil {
 		bootstrapLogger.Warn("could not open log file; logging to TUI only", slog.Any("err", err))
 	} else {

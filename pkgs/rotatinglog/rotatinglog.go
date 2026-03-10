@@ -11,8 +11,8 @@ import (
 // exceeds maxBytes.  At most maxFiles rotated files are kept; older ones
 // are deleted automatically.  Rotation renames in place:
 //
-//	copilot-autocode.log   → copilot-autocode.log.1
-//	copilot-autocode.log.1 → copilot-autocode.log.2
+//	copilot-autodev.log   → copilot-autodev.log.1
+//	copilot-autodev.log.1 → copilot-autodev.log.2
 //	…
 //
 // Writer is safe for concurrent use.
@@ -86,7 +86,7 @@ func (w *Writer) rotate() error {
 		if i == w.maxFiles {
 			os.Remove(dst) // delete oldest
 		}
-		os.Rename(src, dst) // ignore errors (file may not exist)
+		_ = os.Rename(src, dst) // ignore errors (file may not exist)
 	}
 
 	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)

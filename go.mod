@@ -1,4 +1,4 @@
-module github.com/BlackbirdWorks/copilot-autocode
+module github.com/BlackbirdWorks/copilot-autodev
 
 go 1.26
 

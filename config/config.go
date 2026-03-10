@@ -67,7 +67,7 @@ type Config struct {
 	MergeMethod string `yaml:"merge_method"`
 
 	// MergeCommitMessage is the commit message written when the PR is merged.
-	// Default: "Auto-merged by copilot-autocode".
+	// Default: "Auto-merged by copilot-autodev".
 	MergeCommitMessage string `yaml:"merge_commit_message"`
 
 	// MergeConflictPrompt is the comment posted on a PR that is behind or has
@@ -189,7 +189,7 @@ func DefaultConfig() *Config {
 		MaxRefinementRounds:           defaultMaxRefinementRounds,
 		RefinementPrompt:              "Please review your implementation against all requirements in the original issue and refine anything that is missing or incomplete. Please commit and push often so you don't lose work.",
 		MergeMethod:                   "squash",
-		MergeCommitMessage:            "Auto-merged by copilot-autocode",
+		MergeCommitMessage:            "Auto-merged by copilot-autodev",
 		MergeConflictPrompt:           "@copilot Please merge from main and address any merge conflicts. Please commit and push often so you don't lose work.",
 		MaxMergeConflictRetries:       defaultMaxMergeConflictRetries,
 		AIMergeResolverCmd:            "gemini",

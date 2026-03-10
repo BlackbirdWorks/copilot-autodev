@@ -1,7 +1,7 @@
 .PHONY: build test integration-test lint lint-fix total-coverage
 
 build:
-	go build -o copilot-autocode main.go
+	go build -o copilot-autodev main.go
 
 test:
 	go test ./...

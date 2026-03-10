@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/BlackbirdWorks/copilot-autocode/config"
-	"github.com/BlackbirdWorks/copilot-autocode/resolver"
+	"github.com/BlackbirdWorks/copilot-autodev/config"
+	"github.com/BlackbirdWorks/copilot-autodev/resolver"
 )
 
 type mockRunner struct {
@@ -20,7 +20,7 @@ type mockRunner struct {
 	calls      []string
 }
 
-func (m *mockRunner) Run(ctx context.Context, out io.Writer, dir, token, name string, args ...string) error {
+func (m *mockRunner) Run(ctx context.Context, _ io.Writer, dir, token, name string, args ...string) error {
 	m.calls = append(m.calls, name+" "+strings.Join(args, " "))
 	if m.runFunc != nil {
 		return m.runFunc(ctx, dir, token, name, args...)
@@ -72,8 +72,8 @@ func TestRunLocalResolution(t *testing.T) {
 			},
 			expectedCalls: []string{
 				"git clone --branch head --single-branch https://x-access-token:ghp_secure_token@github.com/owner/repo.git .",
-				"git config user.email copilot-autocode@users.noreply.github.com",
-				"git config user.name copilot-autocode",
+				"git config user.email copilot-autodev@users.noreply.github.com",
+				"git config user.name copilot-autodev",
 				"git fetch origin base",
 				"git merge --no-edit FETCH_HEAD",
 				"ai-resolve resolve conflicts",

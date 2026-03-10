@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlackbirdWorks/copilot-autocode/ghclient"
 	"github.com/google/go-github/v68/github"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/BlackbirdWorks/copilot-autodev/ghclient"
 )
 
 func TestIsMatchForIssue_Units(t *testing.T) {
@@ -25,11 +26,20 @@ func TestIsMatchForIssue_Units(t *testing.T) {
 		{"title match", &github.PullRequest{Title: github.Ptr("Fix #123")}, true},
 		{"body match", &github.PullRequest{Body: github.Ptr("resolves #123")}, true},
 		{"branch match", &github.PullRequest{Head: &github.PullRequestBranch{Ref: github.Ptr("issue-123")}}, true},
-		{"no match", &github.PullRequest{Title: github.Ptr("Fix #456"), Body: github.Ptr("no"), Head: &github.PullRequestBranch{Ref: github.Ptr("main")}}, false},
+		{
+			"no match",
+			&github.PullRequest{
+				Title: github.Ptr("Fix #456"),
+				Body:  github.Ptr("no"),
+				Head:  &github.PullRequestBranch{Ref: github.Ptr("main")},
+			},
+			false,
+		},
 		{"nil fields", &github.PullRequest{}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := c.IsMatchForIssue(tc.pr, issueNum)
 			assert.Equal(t, tc.want, got)
 		})
@@ -38,7 +48,7 @@ func TestIsMatchForIssue_Units(t *testing.T) {
 
 func TestDeleteCommentContaining_Extra(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode([]*github.IssueComment{})
 	})
 	err := c.DeleteCommentContaining(t.Context(), 123, "marker")
@@ -47,7 +57,7 @@ func TestDeleteCommentContaining_Extra(t *testing.T) {
 
 func TestPRIsUpToDateWithBase_Extra(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	pr := &github.PullRequest{
@@ -60,7 +70,7 @@ func TestPRIsUpToDateWithBase_Extra(t *testing.T) {
 
 func TestInvokeCopilotAgent_Error(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 	_, err := c.InvokeCopilotAgent(t.Context(), "prompt", "title", 123, "url")
@@ -69,7 +79,7 @@ func TestInvokeCopilotAgent_Error(t *testing.T) {
 
 func TestGetCopilotJobStatus_Error(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	_, err := c.GetCopilotJobStatus(t.Context(), "job123")
@@ -78,7 +88,7 @@ func TestGetCopilotJobStatus_Error(t *testing.T) {
 
 func TestMergedPRForIssue_Error(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	})
 	_, err := c.MergedPRForIssue(t.Context(), &github.Issue{Number: github.Ptr(123)})
@@ -172,7 +182,7 @@ func TestDiscoverPRViaJobID_Gaps(t *testing.T) {
 		if strings.Contains(r.URL.Path, "/issues/123/comments") {
 			// Return a comment with a job ID
 			_ = json.NewEncoder(w).Encode([]*github.IssueComment{{
-				Body: github.Ptr("<!-- copilot-autocode:job-id:abc-123 -->"),
+				Body: github.Ptr("<!-- copilot-autodev:job-id:abc-123 -->"),
 			}})
 		} else if strings.Contains(r.URL.Path, "/search/issues") {
 			// Mock search failure
@@ -185,7 +195,7 @@ func TestDiscoverPRViaJobID_Gaps(t *testing.T) {
 
 func TestUpdatePRBranch_Error_Extra(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 	})
 	err := c.UpdatePRBranch(t.Context(), 456)
@@ -228,7 +238,7 @@ func TestLastSuccessfulLocalResolutionAt_Extra(t *testing.T) {
 
 func TestUpdatePRBranch_Success(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(&github.PullRequestBranchUpdateResponse{
 			Message: github.Ptr("updated"),
@@ -240,7 +250,7 @@ func TestUpdatePRBranch_Success(t *testing.T) {
 
 func TestInvokeCopilotAgent_Success(t *testing.T) {
 	t.Parallel()
-	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"job_id": "abc-123",
 		})
@@ -258,7 +268,7 @@ func TestDiscoverPRViaJobID_Success(t *testing.T) {
 		switch {
 		case strings.Contains(path, "comments"):
 			_ = json.NewEncoder(w).Encode([]*github.IssueComment{{
-				Body:      github.Ptr("<!-- copilot-autocode:job-id:abc-123 -->"),
+				Body:      github.Ptr("<!-- copilot-autodev:job-id:abc-123 -->"),
 				CreatedAt: &github.Timestamp{Time: time.Now()},
 			}})
 		case strings.Contains(path, "abc-123"):
@@ -325,7 +335,7 @@ func TestLatestCopilotJobID_Success(t *testing.T) {
 	c := setupMockGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "comments") {
 			_ = json.NewEncoder(w).Encode([]*github.IssueComment{{
-				Body:      github.Ptr("<!-- copilot-autocode:job-id:abc-123 -->"),
+				Body:      github.Ptr("<!-- copilot-autodev:job-id:abc-123 -->"),
 				CreatedAt: &github.Timestamp{Time: time.Now()},
 			}})
 		}
